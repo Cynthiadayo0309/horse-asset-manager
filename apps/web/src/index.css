@@ -1,0 +1,62 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+}
+
+:root {
+  font-family: Inter, 'Noto Sans JP', 'Yu Gothic UI', Meiryo, system-ui, sans-serif;
+  color-scheme: light;
+  --background: oklch(0.985 0.004 95);
+  --foreground: oklch(0.22 0.025 155);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.025 155);
+  --primary: oklch(0.42 0.09 155);
+  --primary-foreground: oklch(0.98 0.01 95);
+  --secondary: oklch(0.94 0.02 150);
+  --secondary-foreground: oklch(0.3 0.05 155);
+  --muted: oklch(0.95 0.008 95);
+  --muted-foreground: oklch(0.48 0.02 155);
+  --border: oklch(0.89 0.012 95);
+  --sidebar: oklch(0.97 0.012 150);
+  --sidebar-foreground: oklch(0.25 0.035 155);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--background);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+img,
+svg {
+  max-width: 100%;
+}

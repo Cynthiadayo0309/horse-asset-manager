@@ -1,0 +1,50 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "horse-asset-manager-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "horse_asset_manager_local",
+      "database_id": "local",
+      "migrations_dir": "../../migrations",
+    },
+  ],
+  "triggers": {
+    "crons": ["15 0 * * *"],
+  },
+  "vars": {
+    "APP_ENV": "local",
+  },
+  "env": {
+    "dev": {
+      "name": "horse-asset-manager-dev",
+      "workers_dev": true,
+      "preview_urls": false,
+      "vars": {
+        "APP_ENV": "dev",
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "horse_asset_manager_dev",
+          "database_id": "1c280494-f1b6-48fb-9e7e-75dea3982ade",
+          "migrations_dir": "../../migrations",
+        },
+      ],
+      "triggers": {
+        "crons": ["15 0 * * *"],
+      },
+      "observability": {
+        "enabled": true,
+      },
+    },
+  },
+}

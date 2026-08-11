@@ -1,0 +1,48 @@
+{
+  "name": "horse-asset-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names web,api --prefix-colors cyan,magenta \"npm run dev:web\" \"npm run dev:api\"",
+    "dev:web": "npm run dev --workspace @horse-asset-manager/web",
+    "dev:api": "npm run dev --workspace @horse-asset-manager/api",
+    "dev:worker": "npm run build --workspace @horse-asset-manager/web && npm run dev:api",
+    "db:migrate:local": "npm run db:migrate:local --workspace @horse-asset-manager/api",
+    "db:seed:local": "npm run db:seed:local --workspace @horse-asset-manager/api",
+    "build": "npm run build --workspace @horse-asset-manager/web && npm run build --workspace @horse-asset-manager/api",
+    "deploy:dev": "npm run build --workspace @horse-asset-manager/web && npm run deploy:dev --workspace @horse-asset-manager/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "concurrently": "^10.0.4",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.9.0",
+    "jsdom": "^30.0.1",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.66.0",
+    "vitest": "^4.1.10"
+  }
+}
