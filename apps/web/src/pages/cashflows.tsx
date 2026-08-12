@@ -276,6 +276,10 @@ export function SchedulePage() {
     queryKey: ['reconciliations'],
     queryFn: () => apiList<Reconciliation>('/api/reconciliations?pageSize=100'),
   });
+  const actuals = useQuery({
+    queryKey: ['cashflows', month, 'reconciliation-candidates'],
+    queryFn: () => apiList<Cashflow>(`/api/cashflows?targetMonth=${month}&pageSize=100`),
+  });
   const categories = useQuery({
     queryKey: ['categories'],
     queryFn: () => apiRequest<Category[]>('/api/categories'),
@@ -309,6 +313,7 @@ export function SchedulePage() {
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['scheduled'] });
       void client.invalidateQueries({ queryKey: ['cashflows'] });
+      void client.invalidateQueries({ queryKey: ['reconciliations'] });
     },
   });
   const generate = useMutation({
@@ -325,6 +330,21 @@ export function SchedulePage() {
   const resolve = useMutation({
     mutationFn: (id: number) => patchJson(`/api/reconciliations/${id}`, { status: 'resolved' }),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['reconciliations'] }),
+  });
+  const manualMatch = useMutation({
+    mutationFn: (value: { scheduledCashflowId: number; cashflowId: number; reason: string }) =>
+      postJson('/api/reconciliations', value),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['reconciliations'] });
+      void client.invalidateQueries({ queryKey: ['scheduled'] });
+    },
+  });
+  const unlink = useMutation({
+    mutationFn: (id: number) => deleteRequest(`/api/reconciliations/${id}`),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['reconciliations'] });
+      void client.invalidateQueries({ queryKey: ['scheduled'] });
+    },
   });
   function scheduledSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -358,6 +378,50 @@ export function SchedulePage() {
       note: null,
     });
   }
+  const reconciledScheduledIds = new Set(
+    reconciliations.data?.data.flatMap((item) =>
+      item.scheduledCashflowId == null ? [] : [item.scheduledCashflowId],
+    ) ?? [],
+  );
+  const reconciledCashflowIds = new Set(
+    reconciliations.data?.data.flatMap((item) =>
+      item.cashflowId == null ? [] : [item.cashflowId],
+    ) ?? [],
+  );
+  const candidatePairs =
+    scheduled.data?.data
+      .filter(
+        (item) =>
+          ['planned', 'overdue'].includes(item.status) && !reconciledScheduledIds.has(item.id),
+      )
+      .flatMap((planned) => {
+        const actual = actuals.data?.data
+          .filter(
+            (item) => item.direction === planned.direction && !reconciledCashflowIds.has(item.id),
+          )
+          .sort((left, right) => {
+            const amountOrder =
+              Math.abs(left.amountYen - planned.amountYen) -
+              Math.abs(right.amountYen - planned.amountYen);
+            if (amountOrder !== 0) return amountOrder;
+            return (
+              Math.abs(Date.parse(left.occurredOn) - Date.parse(planned.dueOn)) -
+              Math.abs(Date.parse(right.occurredOn) - Date.parse(planned.dueOn))
+            );
+          })[0];
+        if (!actual) return [];
+        const dayDifference = Math.round(
+          Math.abs(Date.parse(actual.occurredOn) - Date.parse(planned.dueOn)) / 86_400_000,
+        );
+        return [
+          {
+            planned,
+            actual,
+            differenceYen: actual.amountYen - planned.amountYen,
+            reason: `${actual.amountYen === planned.amountYen ? '同額' : '金額差あり'}・日付差${dayDifference}日`,
+          },
+        ];
+      }) ?? [];
   return (
     <div className="grid gap-6">
       <PageHeader
@@ -522,6 +586,54 @@ export function SchedulePage() {
             今月を自動照合
           </Button>
         </div>
+        {manualMatch.error || unlink.error ? (
+          <div className="mb-4">
+            <ErrorState error={manualMatch.error ?? unlink.error} />
+          </div>
+        ) : null}
+        {candidatePairs.length ? (
+          <div className="mb-6 grid gap-3">
+            <h3 className="font-semibold">今月の未照合候補</h3>
+            {candidatePairs.map(({ planned, actual, differenceYen, reason }) => (
+              <div key={`${planned.id}:${actual.id}`} className="rounded-lg border p-4 text-sm">
+                <div className="grid gap-3 lg:grid-cols-[1fr_auto_1fr_auto] lg:items-center">
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground">予定</p>
+                    <p className="font-medium">{planned.title}</p>
+                    <p>
+                      {planned.dueOn}・{formatYen(planned.amountYen)}
+                    </p>
+                  </div>
+                  <span aria-hidden="true">↔</span>
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground">実績</p>
+                    <p className="font-medium">{actual.title}</p>
+                    <p>
+                      {actual.occurredOn}・{formatYen(actual.amountYen)}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={manualMatch.isPending}
+                    onClick={() =>
+                      manualMatch.mutate({
+                        scheduledCashflowId: planned.id,
+                        cashflowId: actual.id,
+                        reason,
+                      })
+                    }
+                  >
+                    この組み合わせで照合
+                  </Button>
+                </div>
+                <p className="mt-3 text-muted-foreground">
+                  判定理由：{reason}・差額 {formatYen(differenceYen)}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {reconciliations.data?.data.length ? (
           <div className="grid gap-2">
             {reconciliations.data.data.map((item) => (
@@ -529,17 +641,37 @@ export function SchedulePage() {
                 key={item.id}
                 className="grid gap-3 rounded border p-3 text-sm sm:flex sm:items-center sm:justify-between"
               >
-                <span>
-                  予定 #{item.scheduledCashflowId ?? '-'} ↔ 実績 #{item.cashflowId ?? '-'}
-                  {item.differenceYen ? `（差額 ${formatYen(item.differenceYen)}）` : ''}
-                </span>
-                {item.status === 'open' ? (
-                  <Button size="sm" variant="ghost" onClick={() => resolve.mutate(item.id)}>
-                    確認済み
+                <div>
+                  <p>
+                    予定：{item.scheduledTitle ?? `#${item.scheduledCashflowId ?? '-'}`}
+                    {item.scheduledDueOn ? `（${item.scheduledDueOn}）` : ''}
+                  </p>
+                  <p>
+                    実績：{item.actualTitle ?? `#${item.cashflowId ?? '-'}`}
+                    {item.actualOccurredOn ? `（${item.actualOccurredOn}）` : ''}
+                  </p>
+                  <p className="mt-1 text-muted-foreground">
+                    差額 {formatYen(item.differenceYen ?? 0)}・判定理由：
+                    {item.reason ?? (item.matchType === 'exact' ? '同額・日付条件一致' : '要確認')}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {item.status === 'open' ? (
+                    <Button size="sm" variant="ghost" onClick={() => resolve.mutate(item.id)}>
+                      確認済み
+                    </Button>
+                  ) : (
+                    <StatusBadge tone="success">確認済み</StatusBadge>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={unlink.isPending}
+                    onClick={() => unlink.mutate(item.id)}
+                  >
+                    照合を解除
                   </Button>
-                ) : (
-                  <StatusBadge tone="success">確認済み</StatusBadge>
-                )}
+                </div>
               </div>
             ))}
           </div>

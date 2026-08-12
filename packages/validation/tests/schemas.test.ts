@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   analyticsQuerySchema,
+  categoryUpdateSchema,
   dateStringSchema,
   horseDeleteSchema,
   horseUpdateSchema,
   investmentCreateSchema,
   paginationQuerySchema,
+  recurringRuleUpdateSchema,
+  simulationItemUpdateSchema,
+  simulationScenarioUpdateSchema,
   statementImportCreateSchema,
   yearMonthSchema,
   yenAmountSchema,
@@ -75,6 +79,14 @@ describe('shared validation schemas', () => {
 
   it('rejects an unknown horse status', () => {
     expect(horseUpdateSchema.safeParse({ status: 'unknown' }).success).toBe(false);
+  });
+
+  it('does not inject create defaults into partial updates', () => {
+    expect(categoryUpdateSchema.parse({ name: '変更' })).toEqual({ name: '変更' });
+    expect(horseUpdateSchema.parse({ name: '変更後' })).toEqual({ name: '変更後' });
+    expect(recurringRuleUpdateSchema.parse({ title: '変更' })).toEqual({ title: '変更' });
+    expect(simulationScenarioUpdateSchema.parse({ name: '変更' })).toEqual({ name: '変更' });
+    expect(simulationItemUpdateSchema.parse({ title: '変更' })).toEqual({ title: '変更' });
   });
 
   it('accepts a statement import when the item totals match', () => {

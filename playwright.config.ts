@@ -11,6 +11,7 @@ export default defineConfig({
   testDir: './tests/e2e',
   // E2E scenarios share the local D1 instance, so keep database mutations serial.
   fullyParallel: false,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: 'html',

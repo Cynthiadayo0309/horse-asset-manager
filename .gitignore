@@ -4,7 +4,9 @@ coverage/
 playwright-report/
 test-results/
 tmp/
+.tmp/
 .wrangler/
+.backups/
 .dev.vars
 .env
 .env.local

@@ -13,6 +13,27 @@ import type { AppBindings } from './types';
 
 export const app = new Hono<AppBindings>();
 
+app.use('*', async (c, next) => {
+  const requestId = c.req.header('cf-ray') ?? crypto.randomUUID();
+  const startedAt = Date.now();
+  let errorType: string | null = null;
+  c.set('requestId', requestId);
+  try {
+    await next();
+  } catch (error) {
+    errorType =
+      error instanceof ApiError ? error.code : error instanceof Error ? error.name : 'Error';
+    throw error;
+  } finally {
+    c.header('x-request-id', requestId);
+    console.info('request_completed', {
+      requestId,
+      durationMs: Date.now() - startedAt,
+      errorType,
+    });
+  }
+});
+
 app.use('*', secureHeaders());
 app.use('/api/*', async (c, next) => {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
@@ -65,7 +86,10 @@ app.onError((error, c) => {
     );
   }
   if (error instanceof HTTPException) return error.getResponse();
-  console.error('Unhandled application error', { name: error.name, message: error.message });
+  console.error('application_error', {
+    requestId: c.get('requestId'),
+    errorType: error.name || 'Error',
+  });
   return c.json(
     { error: { code: 'INTERNAL_ERROR', message: '処理中にエラーが発生しました。', details: [] } },
     500,

@@ -22,6 +22,7 @@
   },
   "vars": {
     "APP_ENV": "local",
+    "ALLOW_REGISTRATION": "true",
   },
   "env": {
     "dev": {
@@ -30,6 +31,7 @@
       "preview_urls": false,
       "vars": {
         "APP_ENV": "dev",
+        "ALLOW_REGISTRATION": "false",
       },
       "d1_databases": [
         {

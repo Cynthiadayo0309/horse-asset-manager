@@ -40,6 +40,20 @@ const statusLabels: Record<Horse['status'], string> = {
   rejected: '落選',
   skipped: '見送り',
 };
+const settlementTypeLabels: Record<string, string> = {
+  final_cost: '最終維持費',
+  sale_proceeds: '売却代金',
+  insurance: '保険金',
+  refund: '返還金',
+  retirement_settlement: '引退精算金',
+  other: 'その他精算',
+};
+const settlementStatusLabels: Record<string, string> = {
+  planned: '未処理',
+  received: '受領済み',
+  paid: '支払済み',
+  cancelled: '取消',
+};
 const formatRate = (value: number | null | undefined) =>
   value == null ? '未算出' : `${value.toFixed(1)}%`;
 
@@ -624,7 +638,7 @@ export function HorseDetailPage() {
   });
   const completeSettlement = useMutation({
     mutationFn: ({ settlementId, categoryId }: { settlementId: number; categoryId: number }) =>
-      postJson(`/api/settlements/${settlementId}/complete`, {
+      postJson<Settlement>(`/api/settlements/${settlementId}/complete`, {
         settledOn: currentDate(),
         categoryId,
       }),
@@ -824,6 +838,7 @@ export function HorseDetailPage() {
       </Panel>
       {value.status === 'retired' || value.status === 'settling' || value.status === 'settled' ? (
         <Panel title="引退・精算">
+          {completeSettlement.error ? <ErrorState error={completeSettlement.error} /> : null}
           <form
             className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5"
             onSubmit={settlementSubmit}
@@ -849,7 +864,14 @@ export function HorseDetailPage() {
                 className="grid gap-3 rounded border p-3 text-sm sm:flex sm:items-center sm:justify-between"
               >
                 <span>
-                  {item.settlementType}（{item.status}）
+                  {settlementTypeLabels[item.settlementType] ?? item.settlementType}（
+                  {settlementStatusLabels[item.status] ?? item.status}）
+                  {item.settledOn ? (
+                    <small className="mt-1 block text-muted-foreground">
+                      完了日 {item.settledOn}
+                      {item.cashflowId ? `・作成した収支 #${item.cashflowId}` : ''}
+                    </small>
+                  ) : null}
                 </span>
                 <div className="flex flex-wrap items-center gap-3">
                   <strong>{formatYen(item.amountYen)}</strong>

@@ -7,7 +7,7 @@ import {
   type RegisterInput,
   type SetupInput,
 } from '@horse-asset-manager/validation';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -16,11 +16,16 @@ import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { ErrorState } from '@/components/feedback';
 import { Field, Input } from '@/components/form';
-import { postJson } from '@/lib/api';
+import { apiRequest, postJson } from '@/lib/api';
 import type { User } from '@/types';
 
 export function AuthPage() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
+  const config = useQuery({
+    queryKey: ['auth-config'],
+    queryFn: () => apiRequest<{ registrationAllowed: boolean }>('/api/auth/config'),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
   return (
     <main className="grid min-h-screen grid-cols-1 bg-emerald-950 text-white lg:grid-cols-[1.05fr_0.95fr]">
       <section className="relative flex min-h-[19rem] flex-col justify-between overflow-hidden p-6 sm:p-8 lg:min-h-screen lg:p-12">
@@ -60,12 +65,14 @@ export function AuthPage() {
             >
               ログイン
             </button>
-            <button
-              className={`flex-1 rounded-md px-3 py-2 text-sm font-medium ${mode === 'register' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
-              onClick={() => setMode('register')}
-            >
-              新規登録
-            </button>
+            {config.data?.registrationAllowed ? (
+              <button
+                className={`flex-1 rounded-md px-3 py-2 text-sm font-medium ${mode === 'register' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}
+                onClick={() => setMode('register')}
+              >
+                新規登録
+              </button>
+            ) : null}
           </div>
           {mode === 'login' ? <LoginForm /> : <RegisterForm />}
         </div>

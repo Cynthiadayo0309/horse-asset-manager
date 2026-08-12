@@ -22,13 +22,18 @@ import {
   scheduledCashflowUpdateSchema,
   scheduledListQuerySchema,
 } from '@horse-asset-manager/validation';
-import { and, asc, count, desc, eq, gte, lte, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, lte, or, type SQL } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
 
 import { requireAuth } from '../lib/auth';
 import { ApiError, getIp, jsonChanges, ok, paginated, parseJson, parseValue } from '../lib/http';
 import { assertCategory, assertClub, assertHorse } from '../lib/ownership';
-import { generateSchedulesForRule, scheduleHorizon } from '../services/schedules';
+import {
+  generateSchedulesForRule,
+  prepareScheduleStatements,
+  scheduleHorizon,
+  type RecurringRule,
+} from '../services/schedules';
 import type { AppBindings } from '../types';
 
 export const cashflowRoutes = new Hono<AppBindings>();
@@ -212,18 +217,34 @@ cashflowRoutes.delete('/cashflows/:id', async (c) => {
       createdAt: timestamp,
     }),
   ] as const;
-  const [updated] = await db.batch(queries);
   if (reconciliation[0]?.scheduledCashflowId) {
-    await db.batch([
+    const restoredStatus =
+      (await findScheduled(c, reconciliation[0].scheduledCashflowId)).dueOn < todayInJapan()
+        ? ('overdue' as const)
+        : ('planned' as const);
+    const [updated] = await db.batch([
+      ...queries,
       db
         .delete(cashflowReconciliations)
-        .where(eq(cashflowReconciliations.id, reconciliation[0].id)),
+        .where(
+          and(
+            eq(cashflowReconciliations.id, reconciliation[0].id),
+            eq(cashflowReconciliations.userId, user.id),
+          ),
+        ),
       db
         .update(scheduledCashflows)
-        .set({ status: 'planned', updatedAt: timestamp })
-        .where(eq(scheduledCashflows.id, reconciliation[0].scheduledCashflowId)),
+        .set({ status: restoredStatus, updatedAt: timestamp })
+        .where(
+          and(
+            eq(scheduledCashflows.id, reconciliation[0].scheduledCashflowId),
+            eq(scheduledCashflows.userId, user.id),
+          ),
+        ),
     ]);
+    return ok(c, updated[0], '収支をアーカイブしました。');
   }
+  const [updated] = await db.batch(queries);
   return ok(c, updated[0], '収支をアーカイブしました。');
 });
 
@@ -253,33 +274,58 @@ cashflowRoutes.post('/recurring-rules', async (c) => {
   if (input.horseId) await assertHorse(c, input.horseId);
   if (input.clubId) await assertClub(c, input.clubId);
   const user = c.get('user');
-  const db = createDatabase(c.env.DB);
   const timestamp = nowIso();
-  const [created] = await db.batch([
-    db
-      .insert(recurringRules)
-      .values({
-        userId: user.id,
-        ...input,
-        status: 'active',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      })
-      .returning(),
-    db.insert(auditLogs).values({
-      userId: user.id,
-      action: 'create',
-      entityType: 'recurring_rules',
-      entityId: null,
-      subjectHorseId: input.horseId ?? null,
-      changesJson: jsonChanges(input),
-      ipAddress: getIp(c),
-      createdAt: timestamp,
-    }),
+  const throughMonth = scheduleHorizon(todayInJapan().slice(0, 7));
+  const rule: RecurringRule = {
+    id: randomDatabaseId(),
+    userId: user.id,
+    horseId: input.horseId ?? null,
+    clubId: input.clubId ?? null,
+    categoryId: input.categoryId,
+    direction: input.direction,
+    title: input.title,
+    amountYen: input.amountYen,
+    frequency: input.frequency,
+    dayOfMonth: input.dayOfMonth,
+    startMonth: input.startMonth,
+    endMonth: input.endMonth ?? null,
+    generatedThroughMonth: throughMonth,
+    status: 'active',
+    note: input.note ?? null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const schedules = prepareScheduleStatements(c.env.DB, rule, throughMonth, timestamp);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO recurring_rules
+         (id, user_id, horse_id, club_id, category_id, direction, title, amount_yen, frequency, day_of_month, start_month, end_month, generated_through_month, status, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+    ).bind(
+      rule.id,
+      rule.userId,
+      rule.horseId,
+      rule.clubId,
+      rule.categoryId,
+      rule.direction,
+      rule.title,
+      rule.amountYen,
+      rule.frequency,
+      rule.dayOfMonth,
+      rule.startMonth,
+      rule.endMonth,
+      rule.generatedThroughMonth,
+      rule.note,
+      rule.createdAt,
+      rule.updatedAt,
+    ),
+    ...schedules.statements,
+    c.env.DB.prepare(
+      `INSERT INTO audit_logs
+         (user_id, action, entity_type, entity_id, subject_horse_id, changes_json, ip_address, created_at)
+         VALUES (?, 'create', 'recurring_rules', ?, ?, ?, ?, ?)`,
+    ).bind(user.id, rule.id, rule.horseId, jsonChanges(input), getIp(c), timestamp),
   ]);
-  const rule = created[0];
-  if (!rule) throw new ApiError(422, 'CREATE_FAILED', '定期予定を作成できませんでした。');
-  await generateSchedulesForRule(c.env.DB, db, rule, scheduleHorizon(todayInJapan().slice(0, 7)));
   return ok(c, rule, '定期予定を登録し、12か月分を生成しました。', 201);
 });
 
@@ -332,7 +378,7 @@ cashflowRoutes.patch('/recurring-rules/:id', async (c) => {
   ]);
   const rule = updated[0];
   if (rule)
-    await generateSchedulesForRule(c.env.DB, db, rule, scheduleHorizon(todayInJapan().slice(0, 7)));
+    await generateSchedulesForRule(c.env.DB, rule, scheduleHorizon(todayInJapan().slice(0, 7)));
   return ok(c, rule, '定期予定を更新しました。');
 });
 
@@ -387,7 +433,7 @@ cashflowRoutes.post('/recurring-rules/generate', async (c) => {
     .limit(200);
   let generated = 0;
   for (const rule of rules)
-    generated += await generateSchedulesForRule(c.env.DB, db, rule, targetMonth);
+    generated += await generateSchedulesForRule(c.env.DB, rule, targetMonth);
   return ok(c, { generated }, '予定を生成しました。');
 });
 
@@ -488,8 +534,35 @@ cashflowRoutes.get('/reconciliations', async (c) => {
   const where = eq(cashflowReconciliations.userId, userId);
   const [rows, totals] = await Promise.all([
     db
-      .select()
+      .select({
+        id: cashflowReconciliations.id,
+        scheduledCashflowId: cashflowReconciliations.scheduledCashflowId,
+        cashflowId: cashflowReconciliations.cashflowId,
+        matchType: cashflowReconciliations.matchType,
+        differenceYen: cashflowReconciliations.differenceYen,
+        reason: cashflowReconciliations.reason,
+        status: cashflowReconciliations.status,
+        matchedAt: cashflowReconciliations.matchedAt,
+        createdAt: cashflowReconciliations.createdAt,
+        scheduledTitle: scheduledCashflows.title,
+        scheduledAmountYen: scheduledCashflows.amountYen,
+        scheduledDueOn: scheduledCashflows.dueOn,
+        actualTitle: cashflows.title,
+        actualAmountYen: cashflows.amountYen,
+        actualOccurredOn: cashflows.occurredOn,
+      })
       .from(cashflowReconciliations)
+      .leftJoin(
+        scheduledCashflows,
+        and(
+          eq(scheduledCashflows.id, cashflowReconciliations.scheduledCashflowId),
+          eq(scheduledCashflows.userId, userId),
+        ),
+      )
+      .leftJoin(
+        cashflows,
+        and(eq(cashflows.id, cashflowReconciliations.cashflowId), eq(cashflows.userId, userId)),
+      )
       .where(where)
       .orderBy(desc(cashflowReconciliations.createdAt))
       .limit(pageSize)
@@ -545,6 +618,64 @@ cashflowRoutes.patch('/reconciliations/:id', async (c) => {
     }),
   ]);
   return ok(c, updated[0], '照合情報を更新しました。');
+});
+
+cashflowRoutes.delete('/reconciliations/:id', async (c) => {
+  const { id } = parseValue(c.req.param(), idParamsSchema);
+  const user = c.get('user');
+  const db = createDatabase(c.env.DB);
+  const rows = await db
+    .select()
+    .from(cashflowReconciliations)
+    .where(and(eq(cashflowReconciliations.id, id), eq(cashflowReconciliations.userId, user.id)))
+    .limit(1);
+  const reconciliation = rows[0];
+  if (!reconciliation)
+    throw new ApiError(404, 'RECONCILIATION_NOT_FOUND', '照合情報が見つかりません。');
+
+  const scheduled = reconciliation.scheduledCashflowId
+    ? await findScheduled(c, reconciliation.scheduledCashflowId)
+    : null;
+  const actual = reconciliation.cashflowId
+    ? await findCashflow(c, reconciliation.cashflowId)
+    : null;
+  const restoredStatus = scheduled
+    ? scheduled.dueOn < todayInJapan()
+      ? ('overdue' as const)
+      : ('planned' as const)
+    : null;
+  const timestamp = nowIso();
+  const deleteReconciliation = db
+    .delete(cashflowReconciliations)
+    .where(and(eq(cashflowReconciliations.id, id), eq(cashflowReconciliations.userId, user.id)));
+  const audit = db.insert(auditLogs).values({
+    userId: user.id,
+    action: 'delete',
+    entityType: 'cashflow_reconciliations',
+    entityId: id,
+    subjectHorseId: scheduled?.horseId ?? actual?.horseId ?? null,
+    changesJson: jsonChanges({
+      reason: 'reconciliation_unlinked',
+      restoredScheduledStatus: restoredStatus,
+    }),
+    ipAddress: getIp(c),
+    createdAt: timestamp,
+  });
+  if (scheduled && restoredStatus) {
+    await db.batch([
+      db
+        .update(scheduledCashflows)
+        .set({ status: restoredStatus, updatedAt: timestamp })
+        .where(
+          and(eq(scheduledCashflows.id, scheduled.id), eq(scheduledCashflows.userId, user.id)),
+        ),
+      deleteReconciliation,
+      audit,
+    ]);
+  } else {
+    await db.batch([deleteReconciliation, audit]);
+  }
+  return ok(c, { deleted: true, restoredScheduledStatus: restoredStatus }, '照合を解除しました。');
 });
 
 cashflowRoutes.post('/reconciliations/auto-match', async (c) => {
@@ -635,14 +766,19 @@ async function createReconciliation(
   const actual = cashflowId ? await findCashflow(c, cashflowId) : null;
   if (scheduled && actual && scheduled.direction !== actual.direction)
     throw new ApiError(409, 'DIRECTION_MISMATCH', '予定と実績の種別が一致しません。');
-  const duplicateConditions: SQL[] = [eq(cashflowReconciliations.userId, user.id)];
+  const duplicateReferences: SQL[] = [];
   if (scheduledId)
-    duplicateConditions.push(eq(cashflowReconciliations.scheduledCashflowId, scheduledId));
-  if (cashflowId) duplicateConditions.push(eq(cashflowReconciliations.cashflowId, cashflowId));
+    duplicateReferences.push(eq(cashflowReconciliations.scheduledCashflowId, scheduledId));
+  if (cashflowId) duplicateReferences.push(eq(cashflowReconciliations.cashflowId, cashflowId));
   const duplicate = await db
     .select()
     .from(cashflowReconciliations)
-    .where(and(...duplicateConditions))
+    .where(
+      and(
+        eq(cashflowReconciliations.userId, user.id),
+        duplicateReferences.length === 1 ? duplicateReferences[0] : or(...duplicateReferences),
+      ),
+    )
     .limit(1);
   if (duplicate[0]) throw new ApiError(409, 'ALREADY_RECONCILED', 'すでに照合されています。');
   const differenceYen = scheduled && actual ? actual.amountYen - scheduled.amountYen : null;
@@ -686,18 +822,51 @@ async function createReconciliation(
     createdAt: timestamp,
   });
   if (scheduledId && actual) {
-    const [created] = await db.batch([
-      insert,
-      db
-        .update(scheduledCashflows)
-        .set({ status: 'paid', updatedAt: timestamp })
-        .where(and(eq(scheduledCashflows.id, scheduledId), eq(scheduledCashflows.userId, user.id))),
-      audit,
-    ]);
-    return created[0];
+    try {
+      const [created] = await db.batch([
+        insert,
+        db
+          .update(scheduledCashflows)
+          .set({ status: 'paid', updatedAt: timestamp })
+          .where(
+            and(eq(scheduledCashflows.id, scheduledId), eq(scheduledCashflows.userId, user.id)),
+          ),
+        audit,
+      ]);
+      return created[0];
+    } catch (error) {
+      if (isReconciliationUniquenessError(error)) throw alreadyReconciledError();
+      throw error;
+    }
   }
-  const [created] = await db.batch([insert, audit]);
-  return created[0];
+  try {
+    const [created] = await db.batch([insert, audit]);
+    return created[0];
+  } catch (error) {
+    if (isReconciliationUniquenessError(error)) throw alreadyReconciledError();
+    throw error;
+  }
+}
+
+function alreadyReconciledError() {
+  return new ApiError(409, 'ALREADY_RECONCILED', 'すでに照合されています。');
+}
+
+function isReconciliationUniquenessError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes('uq_reconciliations_scheduled') ||
+      error.message.includes('uq_reconciliations_cashflow') ||
+      error.message.includes('cashflow_reconciliations.scheduled_cashflow_id') ||
+      error.message.includes('cashflow_reconciliations.cashflow_id'))
+  );
+}
+
+function randomDatabaseId(): number {
+  const values = crypto.getRandomValues(new Uint32Array(2));
+  const high = (values[0] ?? 0) & 0x001f_ffff;
+  const low = values[1] ?? 0;
+  return high * 0x1_0000_0000 + low || 1;
 }
 
 async function refreshReconciliationDifference(

@@ -19,8 +19,12 @@ import type { AppBindings } from '../types';
 
 export const authRoutes = new Hono<AppBindings>();
 
+authRoutes.get('/config', (c) =>
+  ok(c, { registrationAllowed: c.env.ALLOW_REGISTRATION === 'true' }),
+);
+
 authRoutes.post('/register', async (c) => {
-  if (!['local', 'dev'].includes(c.env.APP_ENV)) {
+  if (c.env.ALLOW_REGISTRATION !== 'true') {
     throw new ApiError(403, 'REGISTRATION_DISABLED', 'この環境では新規登録できません。');
   }
   const input = await parseJson(c, registerSchema);

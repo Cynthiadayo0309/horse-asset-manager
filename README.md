@@ -2,6 +2,8 @@
 
 一口馬主の出資検討から毎月の支出・入金、予算、回収率、引退・精算まで、お金の流れを管理するWebサービスです。
 
+要件定義、構成図、DB/API/UI設計、セキュリティ、テスト、運用、トレーサビリティは [docs/README.md](docs/README.md) から参照できます。
+
 競馬予想アプリではありません。レース・馬券予想、血統評価、調教分析、推奨出資馬判定、獲得賞金予測は扱いません。
 
 ## 実装済みの内容
@@ -20,6 +22,10 @@
 - 馬ステータスの自由変更と、360px以上のスマートフォン・タブレット・PC対応
 - 日次Cron（UTC 0:15＝日本時間9:15）による予定補充とアラート判定
 - 利用者単位のデータ分離、監査ログ、業務データのアーカイブ（馬の明示的な完全削除を除く）
+- 精算完了の状態条件・利用者単位冪等性キー・D1 batchによる二重計上防止
+- 照合候補・差額・理由の比較と、収支を残した照合解除
+- `ALLOW_REGISTRATION` による初期アカウント作成後の登録停止
+- 日時付きD1 SQLバックアップと、新しいローカルD1への復元確認
 
 実績金額の集計元は `cashflows` だけです。予定金額や出資契約額を重ねて集計しない設計になっています。
 
@@ -98,6 +104,7 @@ npm.cmd run typecheck
 npm.cmd run lint
 npm.cmd run format:check
 npm.cmd test
+npm.cmd run test:integration
 npm.cmd run build
 npm.cmd run test:e2e
 ```
@@ -161,6 +168,8 @@ npx.cmd wrangler d1 execute horse_asset_manager_dev --remote --env dev --command
 
 Cloudflare Dashboardでは、`Workers & Pages` → `horse-asset-manager-dev` → `Settings` → `Domains & Routes` から `workers.dev` のCloudflare Accessを有効にし、許可するメールだけをAllowポリシーへ登録します。セッション期限は24時間にします。さらにBillingのBudget alertsで `$7` と `$10` の通知を設定します。Budget Alertは利用停止上限ではなく通知です。
 
+devの `ALLOW_REGISTRATION` は既定で `false` です。初期アカウントがまだない場合だけ `apps/api/wrangler.jsonc` のdev値を一時的に `true` としてデプロイ・登録し、直後に `false` へ戻して再デプロイしてください。`/api/auth/config` とログイン画面の新規登録導線で無効化を確認できます。
+
 リアルタイムログとWorkerのロールバックは次のコマンドで操作できます。ログにはパスワード、Cookie、リクエスト本文、個別の金額明細を出さない方針です。
 
 ```powershell
@@ -168,6 +177,24 @@ Set-Location apps\api
 npx.cmd wrangler tail --env dev
 npx.cmd wrangler rollback --env dev
 ```
+
+## D1バックアップと復元確認
+
+DB変更前と重要な一括操作前に、日時付きSQLを保存します。`.backups/` はGit管理対象外です。
+
+```powershell
+# local D1をバックアップ
+powershell -ExecutionPolicy Bypass -File scripts\backup-d1.ps1 -Local
+
+# remote dev D1をバックアップ
+powershell -ExecutionPolicy Bypass -File scripts\backup-d1.ps1
+
+# バックアップを新しい隔離local D1へ復元して外部キーを検査
+powershell -ExecutionPolicy Bypass -File scripts\restore-d1-local.ps1 `
+  -BackupFile .backups\d1\<バックアップファイル>.sql
+```
+
+復元確認は既存local D1を上書きしません。remote devのTime Travelは外部DBを巻き戻すため、利用停止・直前SQLバックアップ・復旧点の記録後に `docs/10_operations_and_release.md` の手順で実施します。
 
 ## ディレクトリ構成
 
@@ -181,19 +208,19 @@ horse-asset-manager/
 │  ├─ shared/              集計・日付・予定生成の共通ロジック
 │  └─ validation/          Web/API共通Zodスキーマ
 ├─ migrations/             D1マイグレーション
-├─ scripts/                ローカル専用seed
+├─ scripts/                seed、バックアップ、復元、資料生成
 ├─ tests/e2e/              Playwright E2E
 └─ docs/                   要件定義・設計資料
 ```
 
-## 次に実装する内容
+## 次に確認する内容
 
-MVPの主要機能は実装済みです。次は本番公開前の品質向上を優先します。
+本人限定の安定運用に必要な整合性、D1統合テスト、訂正UI、登録停止、ローカル復元は実装済みです。次は運用確認を優先します。
 
-1. D1を使うAPI統合テストを増やし、batchロールバックと全制約を自動検証する
-2. 予定・実績の手動照合画面と精算完了操作のUIを磨く
-3. CSVの大規模データ、アクセシビリティ、空状態・失敗状態の網羅テストを増やす
-4. メール確認、パスワード再設定、外部認証へ交換可能な認証境界を追加する
-5. dev環境でD1・Cron・Secure Cookie・SPAルーティングを最終確認する
+1. Cloudflare AccessのAllowメールが本人だけで、devの `ALLOW_REGISTRATION=false` を確認する
+2. 最初の実データ投入前または次回DB変更前に、remote devのSQLバックアップとD1 Time Travel訓練を行う
+3. 実データ量に近い5年CSV・分析・ページングの性能を測る
+4. キーボード操作、200%ズーム、空状態・失敗状態を手動確認する
+5. 一般公開を決めた場合だけ、メール確認、パスワード再設定、レート制限、規約、prod分離へ進む
 
 添付ファイル、R2、メール通知、ブラウザ通知、課金、本番デプロイは現在の対象外です。

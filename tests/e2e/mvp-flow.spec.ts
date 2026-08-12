@@ -5,8 +5,9 @@ test('registers, completes setup, and records a horse and cashflow', async ({ pa
   const email = `e2e-${unique}@example.test`;
   const horseName = `テストホース${unique}`;
 
-  const health = await request.get('/api/health');
-  expect(health.ok()).toBe(true);
+  await expect
+    .poll(async () => (await request.get('/api/health')).ok(), { timeout: 30_000 })
+    .toBe(true);
 
   await page.goto('/login');
   await page.getByRole('button', { name: '新規登録' }).click();
@@ -47,7 +48,7 @@ test('registers, completes setup, and records a horse and cashflow', async ({ pa
   await page.getByLabel('金額（円）').fill('3500');
   await page.getByLabel('カテゴリー').selectOption({ label: '維持費（支出）' });
   await page.getByRole('button', { name: '確定して保存' }).click();
-  await expect(page.getByText('月次維持費')).toBeVisible();
+  await expect(page.getByRole('cell', { name: '月次維持費', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'ログアウト' }).click();
   await page.getByRole('button', { name: '新規登録' }).click();
@@ -308,6 +309,103 @@ test('permanently deletes an invested horse and all horse-linked financial data'
 
   const deletedHorse = await page.context().request.get(`/api/horses/${horseId}`);
   expect(deletedHorse.status()).toBe(404);
+});
+
+test('edits a horse, completes one settlement, and can match then unlink a schedule', async ({
+  page,
+}) => {
+  const unique = Date.now();
+  const email = `stability-${unique}@example.test`;
+  const originalName = `安定化確認馬${unique}`;
+  const updatedName = `${originalName}改`;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo' }).format(new Date());
+  const month = today.slice(0, 7);
+  await registerAndSetup(page, email, '安定化確認利用者');
+
+  const categoriesResponse = await page.context().request.get('/api/categories');
+  const categories = (await categoriesResponse.json()) as {
+    data: Array<{ id: number; categoryType: 'expense' | 'income' }>;
+  };
+  const expenseCategoryId = categories.data.find((item) => item.categoryType === 'expense')?.id;
+  const incomeCategoryId = categories.data.find((item) => item.categoryType === 'income')?.id;
+  expect(expenseCategoryId).toBeTruthy();
+  expect(incomeCategoryId).toBeTruthy();
+
+  const horseResponse = await page.context().request.post('/api/horses', {
+    data: { name: originalName, clubId: null, status: 'retired' },
+  });
+  const horse = (await horseResponse.json()) as { data: { id: number } };
+  expect(horseResponse.status()).toBe(201);
+  await page.goto(`/horses/${horse.data.id}`);
+  await page.getByRole('button', { name: '馬名を編集' }).click();
+  const editDialog = page.getByRole('alertdialog', { name: '馬名を編集' });
+  await editDialog.getByLabel('馬名', { exact: true }).fill(updatedName);
+  await editDialog.getByRole('button', { name: '名前を保存' }).click();
+  await expect(page.getByRole('heading', { name: updatedName })).toBeVisible();
+
+  const settlementResponse = await page
+    .context()
+    .request.post(`/api/horses/${horse.data.id}/settlements`, {
+      data: {
+        settlementType: 'sale_proceeds',
+        direction: 'income',
+        amountYen: 25_000,
+        plannedOn: today,
+        note: null,
+      },
+    });
+  const settlement = (await settlementResponse.json()) as { data: { id: number } };
+  await page.reload();
+  await page.getByRole('button', { name: '受領済みにする' }).click();
+  await expect(page.getByText(/受領済み/u)).toBeVisible();
+  await expect(page.getByText(new RegExp(`完了日 ${today}・作成した収支 #`, 'u'))).toBeVisible();
+  const repeatedSettlement = await page
+    .context()
+    .request.post(`/api/settlements/${settlement.data.id}/complete`, {
+      data: { settledOn: today, categoryId: incomeCategoryId },
+    });
+  expect(repeatedSettlement.status()).toBe(409);
+
+  const scheduledResponse = await page.context().request.post('/api/scheduled-cashflows', {
+    data: {
+      horseId: horse.data.id,
+      clubId: null,
+      categoryId: expenseCategoryId,
+      direction: 'expense',
+      title: '照合予定',
+      amountYen: 5000,
+      dueOn: today,
+      targetMonth: month,
+      note: null,
+    },
+  });
+  const scheduled = (await scheduledResponse.json()) as { data: { id: number } };
+  const actualResponse = await page.context().request.post('/api/cashflows', {
+    data: {
+      horseId: horse.data.id,
+      clubId: null,
+      categoryId: expenseCategoryId,
+      direction: 'expense',
+      title: '照合実績',
+      amountYen: 5000,
+      occurredOn: today,
+      targetMonth: month,
+      paymentMethod: null,
+      note: null,
+    },
+  });
+  expect(actualResponse.status()).toBe(201);
+
+  await page.goto('/scheduled');
+  await expect(page.getByText('今月の未照合候補')).toBeVisible();
+  await page.getByRole('button', { name: 'この組み合わせで照合' }).click();
+  await expect(page.getByRole('button', { name: '照合を解除' })).toBeVisible();
+  await page.getByRole('button', { name: '照合を解除' }).click();
+  await expect(page.getByRole('button', { name: '照合を解除' })).toHaveCount(0);
+  const schedules = (await (
+    await page.context().request.get(`/api/scheduled-cashflows?targetMonth=${month}&pageSize=100`)
+  ).json()) as { data: Array<{ id: number; status: string }> };
+  expect(schedules.data.find((item) => item.id === scheduled.data.id)?.status).toBe('planned');
 });
 
 async function registerAndSetup(

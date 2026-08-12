@@ -443,38 +443,47 @@ insightRoutes.post('/settlements/:id/complete', async (c) => {
     .limit(1);
   const settlement = rows[0];
   if (!settlement) throw new ApiError(404, 'SETTLEMENT_NOT_FOUND', '精算予定が見つかりません。');
+  if (settlement.status !== 'planned' || settlement.cashflowId != null) {
+    throw settlementAlreadyCompletedError();
+  }
   if (category?.categoryType !== settlement.direction)
     throw new ApiError(409, 'CATEGORY_DIRECTION_MISMATCH', 'カテゴリーの種別が一致しません。');
   const timestamp = nowIso();
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      `INSERT INTO cashflows (user_id, horse_id, category_id, direction, title, amount_yen, occurred_on, target_month, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)`,
-    ).bind(
-      user.id,
-      settlement.horseId,
-      input.categoryId,
-      settlement.direction,
-      settlementTitle(settlement.settlementType),
-      settlement.amountYen,
-      input.settledOn,
-      input.settledOn.slice(0, 7),
-      timestamp,
-      timestamp,
-    ),
-    c.env.DB.prepare(
-      'UPDATE horse_settlements SET cashflow_id = last_insert_rowid(), settled_on = ?, status = ?, updated_at = ? WHERE id = ? AND user_id = ?',
-    ).bind(
-      input.settledOn,
-      settlement.direction === 'income' ? 'received' : 'paid',
-      timestamp,
-      id,
-      user.id,
-    ),
-    c.env.DB.prepare(
-      "INSERT INTO audit_logs (user_id, action, entity_type, entity_id, subject_horse_id, changes_json, ip_address, created_at) VALUES (?, 'update', 'horse_settlements', ?, ?, ?, ?, ?)",
-    ).bind(user.id, id, settlement.horseId, jsonChanges(input), getIp(c), timestamp),
-  ]);
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO cashflows (user_id, horse_id, category_id, idempotency_key, direction, title, amount_yen, occurred_on, target_month, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)`,
+      ).bind(
+        user.id,
+        settlement.horseId,
+        input.categoryId,
+        `settlement:${id}`,
+        settlement.direction,
+        settlementTitle(settlement.settlementType),
+        settlement.amountYen,
+        input.settledOn,
+        input.settledOn.slice(0, 7),
+        timestamp,
+        timestamp,
+      ),
+      c.env.DB.prepare(
+        "UPDATE horse_settlements SET cashflow_id = last_insert_rowid(), settled_on = ?, status = ?, updated_at = ? WHERE id = ? AND user_id = ? AND status = 'planned' AND cashflow_id IS NULL",
+      ).bind(
+        input.settledOn,
+        settlement.direction === 'income' ? 'received' : 'paid',
+        timestamp,
+        id,
+        user.id,
+      ),
+      c.env.DB.prepare(
+        "INSERT INTO audit_logs (user_id, action, entity_type, entity_id, subject_horse_id, changes_json, ip_address, created_at) VALUES (?, 'update', 'horse_settlements', ?, ?, ?, ?, ?)",
+      ).bind(user.id, id, settlement.horseId, jsonChanges(input), getIp(c), timestamp),
+    ]);
+  } catch (error) {
+    if (isSettlementIdempotencyError(error)) throw settlementAlreadyCompletedError();
+    throw error;
+  }
   const updated = await db
     .select()
     .from(horseSettlements)
@@ -696,7 +705,25 @@ function settlementTitle(type: string): string {
 }
 
 function csvCell(value: unknown): string {
-  return `"${String(value ?? '').replaceAll('"', '""')}"`;
+  const raw = String(value ?? '');
+  const safe = typeof value === 'string' && /^[\t\r\n ]*[=+\-@]/u.test(raw) ? `'${raw}` : raw;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
+function settlementAlreadyCompletedError() {
+  return new ApiError(
+    409,
+    'SETTLEMENT_ALREADY_COMPLETED',
+    'この精算はすでに実績収支へ登録されています。',
+  );
+}
+
+function isSettlementIdempotencyError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes('uq_cashflows_user_idempotency_key') ||
+      error.message.includes('cashflows.user_id, cashflows.idempotency_key'))
+  );
 }
 
 function csvResponse(

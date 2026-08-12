@@ -260,6 +260,7 @@ export const cashflows = sqliteTable(
       onDelete: 'restrict',
     }),
     sourceLineKey: text('source_line_key'),
+    idempotencyKey: text('idempotency_key'),
     direction: text('direction', { enum: ['expense', 'income'] }).notNull(),
     title: text('title').notNull(),
     amountYen: integer('amount_yen').notNull(),
@@ -283,6 +284,7 @@ export const cashflows = sqliteTable(
       table.statementImportId,
       table.sourceLineKey,
     ),
+    uniqueIndex('uq_cashflows_user_idempotency_key').on(table.userId, table.idempotencyKey),
     check('ck_cashflows_amount_nonnegative', sql`${table.amountYen} >= 0`),
   ],
 );

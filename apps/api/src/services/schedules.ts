@@ -14,13 +14,12 @@ export function scheduleHorizon(currentMonth: string): string {
   return addMonths(currentMonth, 11);
 }
 
-export async function generateSchedulesForRule(
+export function prepareScheduleStatements(
   binding: D1Database,
-  db: Database,
   rule: RecurringRule,
   throughMonth: string,
-): Promise<number> {
-  if (rule.status !== 'active') return 0;
+  timestamp = nowIso(),
+): { count: number; statements: D1PreparedStatement[] } {
   const dates = generateOccurrenceDates(
     {
       frequency: rule.frequency,
@@ -30,37 +29,50 @@ export async function generateSchedulesForRule(
     },
     throughMonth,
   );
+  return {
+    count: dates.length,
+    statements: dates.map((dueOn) =>
+      binding
+        .prepare(
+          `INSERT INTO scheduled_cashflows
+            (user_id, recurring_rule_id, horse_id, club_id, category_id, direction, title, amount_yen, due_on, target_month, status, note, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)
+           ON CONFLICT(user_id, recurring_rule_id, due_on) DO NOTHING`,
+        )
+        .bind(
+          rule.userId,
+          rule.id,
+          rule.horseId,
+          rule.clubId,
+          rule.categoryId,
+          rule.direction,
+          rule.title,
+          rule.amountYen,
+          dueOn,
+          getYearMonth(dueOn),
+          rule.note,
+          timestamp,
+          timestamp,
+        ),
+    ),
+  };
+}
+
+export async function generateSchedulesForRule(
+  binding: D1Database,
+  rule: RecurringRule,
+  throughMonth: string,
+): Promise<number> {
+  if (rule.status !== 'active') return 0;
   const timestamp = nowIso();
-  const statements = dates.map((dueOn) =>
-    binding
-      .prepare(
-        `INSERT INTO scheduled_cashflows
-          (user_id, recurring_rule_id, horse_id, club_id, category_id, direction, title, amount_yen, due_on, target_month, status, note, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)
-         ON CONFLICT(user_id, recurring_rule_id, due_on) DO NOTHING`,
-      )
-      .bind(
-        rule.userId,
-        rule.id,
-        rule.horseId,
-        rule.clubId,
-        rule.categoryId,
-        rule.direction,
-        rule.title,
-        rule.amountYen,
-        dueOn,
-        getYearMonth(dueOn),
-        rule.note,
-        timestamp,
-        timestamp,
-      ),
-  );
-  if (statements.length > 0) await binding.batch(statements);
-  await db
-    .update(recurringRules)
-    .set({ generatedThroughMonth: throughMonth, updatedAt: timestamp })
-    .where(and(eq(recurringRules.id, rule.id), eq(recurringRules.userId, rule.userId)));
-  return statements.length;
+  const prepared = prepareScheduleStatements(binding, rule, throughMonth, timestamp);
+  const updateRule = binding
+    .prepare(
+      'UPDATE recurring_rules SET generated_through_month = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+    )
+    .bind(throughMonth, timestamp, rule.id, rule.userId);
+  await binding.batch([...prepared.statements, updateRule]);
+  return prepared.count;
 }
 
 export async function generateSchedulesForActiveRules(
@@ -85,7 +97,7 @@ export async function generateSchedulesForActiveRules(
     .limit(limit);
   let generated = 0;
   for (const rule of rules)
-    generated += await generateSchedulesForRule(binding, db, rule, throughMonth);
+    generated += await generateSchedulesForRule(binding, rule, throughMonth);
   return generated;
 }
 

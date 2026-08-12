@@ -1,5 +1,6 @@
 export interface Env {
   APP_ENV: 'local' | 'dev' | 'prod';
+  ALLOW_REGISTRATION: 'true' | 'false';
   DB: D1Database;
   ASSETS?: Fetcher;
 }
@@ -16,5 +17,6 @@ export type AppBindings = {
   Bindings: Env;
   Variables: {
     user: AuthUser;
+    requestId: string;
   };
 };

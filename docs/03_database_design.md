@@ -1,375 +1,302 @@
 # 03. データベース設計
 
-Cloudflare D1を想定したテーブル設計です。
-
-## 設計方針
-
-- 金額は円単位の整数で保存する
-- 収支データは原則物理削除しない
-- 例外として、利用者が明示確認した馬の完全削除では、その馬に紐づく収支を含む関連データを依存順に物理削除する
-- 主要テーブルには user_id を持たせる
-- 予定と実績を分けて管理する
-- 出資シミュレーション、予定実績照合、引退精算を専用テーブルで管理する
-- 変更履歴を audit_logs に保存できるようにする
-
-## 1. users
-
-利用者。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | ユーザーID |
-| email | text unique | メールアドレス |
-| name | text | 表示名 |
-| password_hash | text nullable | パスワードハッシュ。外部認証の場合はnull可 |
-| role | text | user/admin |
-| status | text | active/disabled |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 2. clubs
-
-一口クラブ。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | クラブID |
-| user_id | integer fk | ユーザーID |
-| name | text | クラブ名 |
-| short_name | text nullable | 略称 |
-| description | text nullable | メモ |
-| status | text | active/archived |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 3. horses
-
-馬情報。検討馬・出資馬の両方を扱う。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 馬ID |
-| user_id | integer fk | ユーザーID |
-| club_id | integer fk nullable | クラブID |
-| name | text | 馬名または募集馬名 |
-| name_kana | text nullable | カナ |
-| gender | text nullable | 性別 |
-| birth_date | text nullable | 生年月日 |
-| sire | text nullable | 父 |
-| dam | text nullable | 母 |
-| damsire | text nullable | 母父 |
-| trainer | text nullable | 厩舎 |
-| recruitment_year | integer nullable | 募集年度 |
-| total_price_yen | integer nullable | 募集総額 |
-| total_shares | integer nullable | 総口数 |
-| unit_price_yen | integer nullable | 一口価格 |
-| expected_monthly_cost_yen | integer nullable | 月額維持費見込み |
-| expected_insurance_yen | integer nullable | 保険料見込み |
-| application_deadline | text nullable | 募集締切日 |
-| status | text | considering/applied/invested/active/retired/settling/settled/rejected/skipped |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 4. investments
-
-出資情報。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 出資ID |
-| user_id | integer fk | ユーザーID |
-| horse_id | integer fk | 馬ID |
-| shares | integer | 出資口数 |
-| unit_price_yen | integer | 一口価格 |
-| committed_amount_yen | integer | 契約上の出資金合計 |
-| joined_on | text nullable | 出資日 |
-| note | text nullable | メモ |
-| archived_at | text nullable | 既存互換用のアーカイブ日時。馬削除時は出資情報も完全削除する |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 3A. horse_name_aliases
-
-馬名変更前の募集馬名・旧名。現在名は `horses.name` を正本とする。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 履歴ID |
-| user_id | integer fk | ユーザーID |
-| horse_id | integer fk | 馬ID |
-| name | text | 以前の名前 |
-| created_at | text | 作成日時 |
-
-`unique(user_id, horse_id, name)` とする。馬の完全削除時は履歴も依存順に削除する。
-
-## 4A. statement_imports
-
-ブラウザで解析した請求書・精算書の取込記録。PDF本体や抽出全文は保存しない。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 取込ID |
-| user_id | integer fk | ユーザーID |
-| source_type | text | lord/silk |
-| document_hash | text | PDFのSHA-256 |
-| target_month | text | YYYY-MM |
-| destination | text | scheduled/confirmed |
-| item_count | integer | 登録明細数 |
-| created_at | text | 作成日時 |
-
-`unique(user_id, document_hash)` で同一PDFの重複取込を防止する。
-
-## 5. categories
-
-収支カテゴリー。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | カテゴリーID |
-| user_id | integer fk | ユーザーID |
-| name | text | カテゴリー名 |
-| category_type | text | expense/income |
-| parent_id | integer nullable | 親カテゴリーID |
-| sort_order | integer | 並び順 |
-| status | text | active/archived |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 6. recurring_rules
-
-定期支出ルール。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | ルールID |
-| user_id | integer fk | ユーザーID |
-| horse_id | integer fk nullable | 馬ID |
-| club_id | integer fk nullable | クラブID |
-| category_id | integer fk | カテゴリーID |
-| title | text | ルール名 |
-| amount_yen | integer | 金額 |
-| frequency | text | monthly/yearly/once |
-| day_of_month | integer nullable | 毎月何日 |
-| start_month | text | YYYY-MM |
-| end_month | text nullable | YYYY-MM |
-| next_run_on | text nullable | 次回生成日 |
-| status | text | active/inactive/ended |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 7. scheduled_cashflows
-
-予定支出・予定入金。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 予定ID |
-| user_id | integer fk | ユーザーID |
-| recurring_rule_id | integer fk nullable | 定期支出ルールID |
-| horse_id | integer fk nullable | 馬ID |
-| club_id | integer fk nullable | クラブID |
-| category_id | integer fk | カテゴリーID |
-| direction | text | expense/income |
-| title | text | タイトル |
-| amount_yen | integer | 予定金額 |
-| due_on | text | 支払予定日/入金予定日 |
-| target_month | text | YYYY-MM |
-| status | text | planned/paid/cancelled/overdue |
-| statement_import_id | integer fk nullable | PDF取込ID |
-| source_line_key | text nullable | PDF内の明細識別子 |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 8. cashflows
-
-実績支出・実績入金。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 収支ID |
-| user_id | integer fk | ユーザーID |
-| horse_id | integer fk nullable | 馬ID |
-| club_id | integer fk nullable | クラブID |
-| category_id | integer fk | カテゴリーID |
-| direction | text | expense/income |
-| title | text | タイトル |
-| amount_yen | integer | 実績金額 |
-| occurred_on | text | 発生日 |
-| target_month | text | YYYY-MM |
-| payment_method | text nullable | 支払方法 |
-| status | text | confirmed/cancelled/archived |
-| statement_import_id | integer fk nullable | PDF取込ID |
-| source_line_key | text nullable | PDF内の明細識別子 |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 9. cashflow_reconciliations
-
-予定と実績の照合。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 照合ID |
-| user_id | integer fk | ユーザーID |
-| scheduled_cashflow_id | integer fk | 予定ID |
-| cashflow_id | integer fk nullable | 実績ID |
-| match_type | text | exact/difference/missing_actual/unplanned_actual |
-| difference_yen | integer | 実績 - 予定 |
-| reason | text nullable | 差額理由 |
-| status | text | open/resolved |
-| matched_at | text nullable | 照合日時 |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 10. budgets
-
-予算。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 予算ID |
-| user_id | integer fk | ユーザーID |
-| budget_type | text | monthly/yearly |
-| target_year | integer | 年 |
-| target_month | integer nullable | 月 |
-| amount_yen | integer | 予算額 |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 11. simulation_scenarios
-
-出資シミュレーション。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | シナリオID |
-| user_id | integer fk | ユーザーID |
-| name | text | シナリオ名 |
-| description | text nullable | 説明 |
-| assumed_period_months | integer | 想定期間 |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 12. simulation_items
-
-シミュレーションに含める候補馬。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 明細ID |
-| scenario_id | integer fk | シナリオID |
-| user_id | integer fk | ユーザーID |
-| horse_id | integer fk nullable | 馬ID |
-| title | text | 候補名 |
-| shares | integer | 想定口数 |
-| initial_amount_yen | integer | 初回支出 |
-| monthly_amount_yen | integer | 月額負担 |
-| yearly_amount_yen | integer | 年間負担 |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 13. horse_settlements
-
-引退・精算管理。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 精算ID |
-| user_id | integer fk | ユーザーID |
-| horse_id | integer fk | 馬ID |
-| settlement_type | text | final_cost/sale_proceeds/insurance/refund/other |
-| amount_yen | integer | 金額 |
-| settled_on | text nullable | 精算日 |
-| status | text | planned/received/paid/cancelled |
-| note | text nullable | メモ |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 14. alert_rules
-
-アラート設定。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | アラートルールID |
-| user_id | integer fk | ユーザーID |
-| rule_type | text | due_date/deadline/budget/input_missing/concentration |
-| condition_json | text | 条件JSON |
-| is_enabled | integer | 0/1 |
-| notify_via | text | in_app/email/browser |
-| created_at | text | 作成日時 |
-| updated_at | text | 更新日時 |
-
-## 15. notifications
-
-通知履歴。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 通知ID |
-| user_id | integer fk | ユーザーID |
-| alert_rule_id | integer fk nullable | アラートルールID |
-| title | text | タイトル |
-| message | text | メッセージ |
-| severity | text | info/warning/error |
-| is_read | integer | 0/1 |
-| read_at | text nullable | 既読日時 |
-| created_at | text | 作成日時 |
-
-## 16. attachments
-
-添付ファイル。MVP後半またはPhase 2で実装。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | 添付ID |
-| user_id | integer fk | ユーザーID |
-| entity_type | text | horse/cashflow/settlement |
-| entity_id | integer | 紐付け先ID |
-| file_name | text | ファイル名 |
-| file_url | text | R2上のURLまたはキー |
-| mime_type | text | MIMEタイプ |
-| uploaded_at | text | アップロード日時 |
-| created_at | text | 作成日時 |
-
-## 17. audit_logs
-
-変更履歴。
-
-| カラム | 型 | 説明 |
-|---|---|---|
-| id | integer pk | ログID |
-| user_id | integer fk | ユーザーID |
-| action | text | create/update/delete/archive |
-| entity_type | text | 対象テーブル名 |
-| entity_id | integer | 対象ID |
-| subject_horse_id | integer nullable | 馬関連ログを削除時に追跡する内部用ID（外部キーではない） |
-| changes_json | text nullable | 変更内容JSON |
-| ip_address | text nullable | IP |
-| created_at | text | 作成日時 |
-
-馬の完全削除時は詳細な馬関連ログも削除し、`entity_type=horse_deletions` の匿名ログを1件残す。このログは馬名・馬ID・金額を含まず、利用者ID、削除日時、テーブル別削除件数だけを保持する。
-
-## 主要な関係
-
-```text
-users 1 - n clubs
-users 1 - n horses
-clubs 1 - n horses
-horses 1 - n investments
-horses 1 - n horse_name_aliases
-statement_imports 1 - n scheduled_cashflows
-statement_imports 1 - n cashflows
-horses 1 - n scheduled_cashflows
-horses 1 - n cashflows
-scheduled_cashflows 1 - n cashflow_reconciliations
-cashflows 1 - n cashflow_reconciliations
-simulation_scenarios 1 - n simulation_items
-horses 1 - n horse_settlements
+## 1. 概要
+
+Cloudflare D1（SQLite互換）を使用します。現行スキーマは19テーブルで、Drizzle定義 `packages/database/src/schema.ts` と `migrations/` を正本とします。
+
+## 2. 設計原則
+
+- 金額は円単位の `integer` とし、小数を保存しない。
+- 日付は `YYYY-MM-DD`、対象年月は `YYYY-MM`、日時はISO 8601文字列で保存する。
+- `sessions` を除く主要業務テーブルは `user_id` を持つ。
+- 参照・更新時は主キーだけでなく `user_id` も条件に含める。
+- 予定と実績を別テーブルにし、実績集計は `cashflows.status='confirmed'` だけを使う。
+- 業務データは原則アーカイブし、馬の明示的な完全削除だけを例外とする。
+- 一意制約とDBチェック制約を、ZodによるAPI検証の後段防御として使う。
+- 複数テーブル更新はD1 `batch()` を用いて一つの業務操作として扱う。
+
+## 3. テーブル一覧
+
+| # | テーブル | 役割 | 主な保持方針 |
+|---:|---|---|---|
+| 1 | `users` | 利用者・初期設定状態 | アカウント正本 |
+| 2 | `sessions` | ログインセッション | 期限切れを日次削除 |
+| 3 | `clubs` | 利用者固有のクラブ | statusでアーカイブ |
+| 4 | `categories` | 支出・入金カテゴリー | statusでアーカイブ |
+| 5 | `budgets` | 年間・月間予算 | 期間単位で上書き更新 |
+| 6 | `horses` | 候補馬・出資馬 | 明示確認時のみ完全削除 |
+| 7 | `horse_name_aliases` | 募集名・旧名 | 馬と共に完全削除 |
+| 8 | `investments` | 出資契約 | 原則保持、馬削除時は削除 |
+| 9 | `statement_imports` | PDF取込の重複防止記録 | PDF本体・全文は保持しない |
+| 10 | `cashflows` | 確定した実績支出・入金 | statusで取消・アーカイブ |
+| 11 | `recurring_rules` | 定期予定の生成ルール | statusで無効・終了 |
+| 12 | `scheduled_cashflows` | 支出・入金予定 | statusで支払・取消・期限超過 |
+| 13 | `cashflow_reconciliations` | 予定と実績の1対1照合 | open/resolved |
+| 14 | `simulation_scenarios` | シミュレーション見出し | statusでアーカイブ |
+| 15 | `simulation_items` | シミュレーション明細 | シナリオ削除でcascade |
+| 16 | `horse_settlements` | 引退後の精算予定・完了 | 完了時にcashflowへ関連付け |
+| 17 | `alert_rules` | アラート条件 | 利用者・種別で1件 |
+| 18 | `notifications` | アプリ内通知 | dedupe_keyで重複防止 |
+| 19 | `audit_logs` | 変更・認証・削除監査 | 馬削除時は匿名監査へ置換 |
+
+## 4. ER概要図
+
+```mermaid
+erDiagram
+  USERS ||--o{ SESSIONS : has
+  USERS ||--o{ CLUBS : owns
+  USERS ||--o{ CATEGORIES : owns
+  USERS ||--o{ BUDGETS : owns
+  USERS ||--o{ HORSES : owns
+  CLUBS o|--o{ HORSES : groups
+  HORSES ||--o{ HORSE_NAME_ALIASES : had
+  HORSES ||--o| INVESTMENTS : has
+  USERS ||--o{ STATEMENT_IMPORTS : imports
+  STATEMENT_IMPORTS o|--o{ CASHFLOWS : creates
+  STATEMENT_IMPORTS o|--o{ SCHEDULED_CASHFLOWS : creates
+  HORSES o|--o{ CASHFLOWS : attributes
+  CLUBS o|--o{ CASHFLOWS : attributes
+  CATEGORIES ||--o{ CASHFLOWS : classifies
+  HORSES o|--o{ RECURRING_RULES : attributes
+  CLUBS o|--o{ RECURRING_RULES : attributes
+  CATEGORIES ||--o{ RECURRING_RULES : classifies
+  RECURRING_RULES o|--o{ SCHEDULED_CASHFLOWS : generates
+  CASHFLOWS o|--o| CASHFLOW_RECONCILIATIONS : matches
+  SCHEDULED_CASHFLOWS o|--o| CASHFLOW_RECONCILIATIONS : matches
+  SIMULATION_SCENARIOS ||--o{ SIMULATION_ITEMS : contains
+  HORSES o|--o{ SIMULATION_ITEMS : references
+  HORSES ||--o{ HORSE_SETTLEMENTS : settles
+  CASHFLOWS o|--o| HORSE_SETTLEMENTS : realizes
+  ALERT_RULES o|--o{ NOTIFICATIONS : creates
+  USERS ||--o{ AUDIT_LOGS : records
 ```
+
+図では可読性のため各テーブルの `user_id` 関係を一部省略しています。
+
+## 5. データ辞書
+
+共通的に使う `created_at`、`updated_at` はISO 8601文字列です。nullableの記載がない項目は必須です。
+
+### 5.1 `users`
+
+| カラム | 型 | 説明 |
+|---|---|---|
+| `id` | integer PK | 利用者ID |
+| `email` | text unique | ログインメール |
+| `name` | text | 表示名 |
+| `password_hash` | text | PBKDF2-SHA256ハッシュ |
+| `role` | text | `user` / `admin` |
+| `status` | text | `active` / `disabled` |
+| `setup_completed` | integer boolean | 初期設定完了 |
+
+### 5.2 `sessions`
+
+| カラム | 型 | 説明 |
+|---|---|---|
+| `id` | text PK | CookieトークンのSHA-256ハッシュ |
+| `user_id` | integer FK | 利用者。利用者削除時cascade |
+| `expires_at` | text | 期限。現在は発行から14日 |
+| `last_used_at` | text | 最終使用日時。現行MVPでは更新しない |
+| `created_at` | text | 作成日時 |
+
+インデックス: `user_id`、`expires_at`。
+
+### 5.3 `clubs`
+
+`id`, `user_id`, `name`, `short_name?`, `description?`, `status(active/archived)`, timestamps。
+
+制約: `unique(user_id, name)`。インデックス: `(user_id, status)`。
+
+### 5.4 `categories`
+
+`id`, `user_id`, `name`, `category_type(expense/income)`, `system_code?`, `parent_id?`, `sort_order`, `status(active/archived)`, timestamps。
+
+制約:
+
+- `unique(user_id, category_type, name)`
+- `unique(user_id, system_code)`。SQLiteではNULLを複数許容する
+- 親削除はrestrict
+
+### 5.5 `budgets`
+
+| カラム | 型 | 説明 |
+|---|---|---|
+| `budget_type` | text | `monthly` / `yearly` |
+| `period_key` | text | 年間は`YYYY`、月間は`YYYY-MM` |
+| `amount_yen` | integer | 非負の予算額 |
+| `note` | text nullable | メモ |
+
+制約: `unique(user_id, budget_type, period_key)`、`amount_yen >= 0`。
+
+### 5.6 `horses`
+
+| 項目群 | カラム |
+|---|---|
+| 識別・所属 | `id`, `user_id`, `club_id?`, `name`, `name_kana?` |
+| 基本情報 | `gender?`, `birth_date?`, `sire?`, `dam?`, `damsire?`, `trainer?` |
+| 募集情報 | `recruitment_year?`, `total_price_yen?`, `total_shares?`, `unit_price_yen?` |
+| 検討条件 | `planned_shares?`, `initial_payment_yen?`, `expected_monthly_cost_yen?`, `expected_insurance_yen?`, `application_deadline?` |
+| 状態 | `status`, `retired_on?`, `settled_on?`, `note?` |
+
+`status` は `considering`, `applied`, `invested`, `active`, `retired`, `settling`, `settled`, `rejected`, `skipped`。金額はNULLまたは非負です。
+
+インデックス: `(user_id,status)`, `(user_id,club_id)`, `(user_id,application_deadline)`。
+
+### 5.7 `horse_name_aliases`
+
+`id`, `user_id`, `horse_id`, `name`, `created_at`。
+
+制約: `unique(user_id, horse_id, name)`。現在名は保存せず、`horses.name` を正本とします。
+
+### 5.8 `investments`
+
+`id`, `user_id`, `horse_id`, `shares`, `unit_price_yen`, `committed_amount_yen`, `joined_on?`, `note?`, `archived_at?`, timestamps。
+
+制約:
+
+- `unique(user_id, horse_id)`
+- `shares > 0`
+- 金額は非負
+- APIで `committed_amount_yen = shares × unit_price_yen` を検証
+
+### 5.9 `statement_imports`
+
+`id`, `user_id`, `source_type(lord/silk)`, `document_hash`, `target_month`, `destination(scheduled/confirmed)`, `item_count`, `created_at`。
+
+制約: `unique(user_id, document_hash)`、`item_count > 0`。PDF本体、抽出全文、個人情報は保存しません。
+
+### 5.10 `cashflows`
+
+| 項目群 | カラム |
+|---|---|
+| 関連 | `user_id`, `horse_id?`, `club_id?`, `category_id` |
+| 取込 | `statement_import_id?`, `source_line_key?` |
+| 冪等性 | `idempotency_key?` |
+| 実績 | `direction(expense/income)`, `title`, `amount_yen`, `occurred_on`, `target_month` |
+| 補足 | `payment_method?`, `status`, `note?`, timestamps |
+
+`status` は `confirmed`, `cancelled`, `archived`。金額は非負です。
+
+一意制約:
+
+- `(user_id, statement_import_id, source_line_key)` — PDF実績明細の冪等性
+- `(user_id, idempotency_key)` — 内部業務操作の冪等性。精算完了では `settlement:<精算ID>` を使用
+
+主要インデックスは対象月・状態、発生日、馬、クラブ、カテゴリーです。
+
+### 5.11 `recurring_rules`
+
+`id`, `user_id`, `horse_id?`, `club_id?`, `category_id`, `direction`, `title`, `amount_yen`, `frequency(monthly/yearly/once)`, `day_of_month`, `start_month`, `end_month?`, `generated_through_month?`, `status(active/inactive/ended)`, `note?`, timestamps。
+
+制約: 金額は非負、日付は1〜31。日が存在しない月は共通ロジックで月末へ丸めます。
+
+### 5.12 `scheduled_cashflows`
+
+`id`, `user_id`, `recurring_rule_id?`, `horse_id?`, `club_id?`, `category_id`, `statement_import_id?`, `source_line_key?`, `direction`, `title`, `amount_yen`, `due_on`, `target_month`, `status(planned/paid/cancelled/overdue)`, `note?`, timestamps。
+
+一意制約:
+
+- `(user_id, recurring_rule_id, due_on)` — 定期予定の冪等性
+- `(user_id, statement_import_id, source_line_key)` — PDF予定明細の冪等性
+
+### 5.13 `cashflow_reconciliations`
+
+`id`, `user_id`, `scheduled_cashflow_id?`, `cashflow_id?`, `match_type(exact/difference/missing_actual/unplanned_actual)`, `difference_yen?`, `reason?`, `status(open/resolved)`, `matched_at?`, timestamps。
+
+制約:
+
+- 予定または実績の少なくとも一方を必須とする
+- `scheduled_cashflow_id` は全体で一意
+- `cashflow_id` は全体で一意
+
+これによりMVPの照合は1対1です。
+
+### 5.14 `simulation_scenarios`
+
+`id`, `user_id`, `name`, `description?`, `start_month`, `assumed_period_months`, `status(active/archived)`, timestamps。
+
+### 5.15 `simulation_items`
+
+`id`, `scenario_id`, `user_id`, `horse_id?`, `title`, `shares`, `initial_amount_yen`, `monthly_amount_yen`, `annual_amount_yen`, `note?`, timestamps。
+
+制約: `shares > 0`、各金額は非負。シナリオ削除時だけDBのcascadeを使用します。
+
+### 5.16 `horse_settlements`
+
+`id`, `user_id`, `horse_id`, `cashflow_id?`, `settlement_type`, `direction`, `amount_yen`, `planned_on?`, `settled_on?`, `status(planned/received/paid/cancelled)`, `note?`, timestamps。
+
+`settlement_type` は `final_cost`, `sale_proceeds`, `insurance`, `refund`, `retirement_settlement`, `other`。
+
+制約: `cashflow_id` は一意、金額は非負です。精算完了APIは `status='planned'` かつ `cashflow_id IS NULL` の場合だけ処理し、作成する実績には `settlement:<精算ID>` の冪等性キーを設定します。状態条件、利用者単位の一意制約、D1 batchの三重防御により、連続・同時リクエストでも実績を1件だけに保ちます。
+
+### 5.17 `alert_rules`
+
+`id`, `user_id`, `rule_type`, `condition_json`, `is_enabled`, `notify_via(in_app)`, timestamps。
+
+制約: `unique(user_id, rule_type)`。条件はAPIで型検証し、実行時は不正JSONを空条件として安全側に扱います。
+
+### 5.18 `notifications`
+
+`id`, `user_id`, `alert_rule_id?`, `dedupe_key`, `title`, `message`, `severity(info/warning/error)`, `is_read`, `read_at?`, `created_at`。
+
+制約: `unique(user_id, dedupe_key)`。ルール削除時は `alert_rule_id` をNULLにします。
+
+### 5.19 `audit_logs`
+
+`id`, `user_id`, `action`, `entity_type`, `entity_id?`, `subject_horse_id?`, `changes_json?`, `ip_address?`, `created_at`。
+
+`action` は `create`, `update`, `archive`, `delete`, `login`, `logout`。パスワード、トークン、Cookieは変更JSONから除外します。
+
+## 6. 削除・アーカイブ方針
+
+### 6.1 原則
+
+- クラブ、カテゴリー、収支、定期ルール、シミュレーションは状態変更で履歴を保持する。
+- APIのDELETEが常に物理削除を意味するわけではない。
+- 外部キーは多くをrestrictとし、暗黙のcascadeで金融データを失わないようにする。
+
+### 6.2 馬の完全削除
+
+馬だけは利用者が現在名を完全一致入力した場合に、次の順序を同じD1 batchで処理します。
+
+```mermaid
+flowchart TD
+  Confirm["現在の馬名と完全一致"] --> Count["匿名のテーブル別削除件数を先に記録"]
+  Count --> N["対象通知を削除"]
+  N --> A["馬に紐づく詳細監査ログを削除"]
+  A --> R["予定・実績照合を削除"]
+  R --> S["精算を削除"]
+  S --> P["予定を削除"]
+  P --> RR["定期ルールを削除"]
+  RR --> SI["シミュレーション明細を削除"]
+  SI --> C["実績収支を削除"]
+  C --> I["出資を削除"]
+  I --> Alias["旧名を削除"]
+  Alias --> H["馬を削除"]
+```
+
+シミュレーションのシナリオ本体は残し、対象馬を参照する明細だけを削除します。匿名監査 `entity_type='horse_deletions'` には利用者、日時、テーブル別件数だけを残し、馬名、馬ID、金額を保存しません。
+
+## 7. 主要インデックス方針
+
+- 一覧: `user_id + status`
+- 月次収支: `user_id + target_month + status`
+- 期限処理: `user_id + due_on + status`
+- 馬台帳: `user_id + horse_id`
+- 分析: `user_id + club_id/category_id/occurred_on`
+- 通知: `user_id + is_read + created_at`
+- セッション掃除: `expires_at`
+
+インデックスは読取行数を減らす一方で書込行数を増やすため、実利用クエリとD1メタ情報を基に追加します。
+
+## 8. マイグレーション
+
+| ファイル | 概要 |
+|---|---|
+| `0000_glamorous_randall_flagg.sql` | MVP初期スキーマ |
+| `0001_reconcile_investment_unit_prices.sql` | 出資一口価格の整合 |
+| `0002_hard_delete_archived_horses.sql` | 馬の完全削除方針への移行 |
+| `0003_statement_imports_and_horse_aliases.sql` | PDF取込記録と馬名履歴 |
+| `0004_cashflow_idempotency.sql` | 実績収支の内部冪等性キーと利用者単位の一意制約 |
+
+適用前にdry-run、適用後に `PRAGMA foreign_key_check;` とアプリ用テーブル数を確認します。devと将来のprodは別D1へ同じ順番で適用します。

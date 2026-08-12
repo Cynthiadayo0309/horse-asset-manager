@@ -103,7 +103,10 @@ export const categoryCreateSchema = z
     sortOrder: z.number().int().min(0).max(10_000).default(0),
   })
   .strict();
-export const categoryUpdateSchema = categoryCreateSchema.partial().strict();
+export const categoryUpdateSchema = categoryCreateSchema
+  .partial()
+  .extend({ sortOrder: z.number().int().min(0).max(10_000).optional() })
+  .strict();
 
 export const horseCreateSchema = z
   .object({
@@ -131,7 +134,10 @@ export const horseCreateSchema = z
     note: z.string().trim().max(5000).nullable().optional(),
   })
   .strict();
-export const horseUpdateSchema = horseCreateSchema.partial().strict();
+export const horseUpdateSchema = horseCreateSchema
+  .partial()
+  .extend({ status: z.enum(horseStatuses).optional() })
+  .strict();
 export const horseDeleteSchema = z
   .object({
     confirmationName: z.string().min(1).max(100),
@@ -316,7 +322,10 @@ export const recurringRuleCreateSchema = z
     note: z.string().trim().max(2000).nullable().optional(),
   })
   .strict();
-export const recurringRuleUpdateSchema = recurringRuleCreateSchema.partial().strict();
+export const recurringRuleUpdateSchema = recurringRuleCreateSchema
+  .partial()
+  .extend({ direction: z.enum(directions).optional() })
+  .strict();
 
 export const scheduledCashflowCreateSchema = z
   .object({
@@ -368,7 +377,10 @@ export const simulationScenarioCreateSchema = z
     assumedPeriodMonths: z.number().int().min(1).max(120).default(12),
   })
   .strict();
-export const simulationScenarioUpdateSchema = simulationScenarioCreateSchema.partial().strict();
+export const simulationScenarioUpdateSchema = simulationScenarioCreateSchema
+  .partial()
+  .extend({ assumedPeriodMonths: z.number().int().min(1).max(120).optional() })
+  .strict();
 export const simulationItemCreateSchema = z
   .object({
     horseId: idSchema.nullable().optional(),
@@ -380,7 +392,15 @@ export const simulationItemCreateSchema = z
     note: z.string().trim().max(1000).nullable().optional(),
   })
   .strict();
-export const simulationItemUpdateSchema = simulationItemCreateSchema.partial().strict();
+export const simulationItemUpdateSchema = simulationItemCreateSchema
+  .partial()
+  .extend({
+    shares: z.number().int().positive().optional(),
+    initialAmountYen: yenAmountSchema.optional(),
+    monthlyAmountYen: yenAmountSchema.optional(),
+    annualAmountYen: yenAmountSchema.optional(),
+  })
+  .strict();
 
 export const settlementCreateSchema = z
   .object({

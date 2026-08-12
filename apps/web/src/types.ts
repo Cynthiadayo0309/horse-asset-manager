@@ -101,6 +101,12 @@ export interface Reconciliation {
   differenceYen: number | null;
   reason: string | null;
   status: 'open' | 'resolved';
+  scheduledTitle: string | null;
+  scheduledAmountYen: number | null;
+  scheduledDueOn: string | null;
+  actualTitle: string | null;
+  actualAmountYen: number | null;
+  actualOccurredOn: string | null;
 }
 
 export interface Budget {
@@ -175,4 +181,5 @@ export interface Settlement {
   plannedOn: string | null;
   settledOn: string | null;
   status: string;
+  cashflowId: number | null;
 }
