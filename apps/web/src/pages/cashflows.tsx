@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatYen } from '@horse-asset-manager/shared';
-import { Archive, CheckCircle2, FileUp, Plus, RefreshCw } from 'lucide-react';
+import { Archive, CheckCircle2, FileUp, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 
@@ -59,6 +59,23 @@ export function CashflowsPage() {
     mutationFn: (id: number) => deleteRequest(`/api/cashflows/${id}`),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['cashflows'] }),
   });
+  const update = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: unknown }) =>
+      patchJson(`/api/cashflows/${id}`, body),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['cashflows'] }),
+  });
+  function editCashflow(row: Cashflow) {
+    const title = window.prompt('内容を編集してください。', row.title);
+    if (title == null || !title.trim()) return;
+    const amountInput = window.prompt('金額（円）を編集してください。', String(row.amountYen));
+    if (amountInput == null) return;
+    const amountYen = Number(amountInput);
+    if (!Number.isSafeInteger(amountYen) || amountYen < 0) {
+      window.alert('金額は0以上の整数で入力してください。');
+      return;
+    }
+    update.mutate({ id: row.id, body: { title: title.trim(), amountYen } });
+  }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const f = new FormData(event.currentTarget);
@@ -158,8 +175,8 @@ export function CashflowsPage() {
             <Field label="メモ">
               <Textarea name="note" />
             </Field>
-            <div className="flex items-end">
-              <Button className="w-full xl:w-auto" disabled={create.isPending} type="submit">
+            <div className="flex sm:col-span-2 sm:justify-end xl:col-span-4">
+              <Button className="w-full sm:w-auto" disabled={create.isPending} type="submit">
                 確定して保存
               </Button>
             </div>
@@ -199,14 +216,27 @@ export function CashflowsPage() {
                     <dd className="font-semibold tabular-nums">{formatYen(row.amountYen)}</dd>
                   </div>
                 </dl>
-                <Button
-                  className="w-full justify-center text-red-700 hover:bg-red-50 hover:text-red-800"
-                  variant="ghost"
-                  onClick={() => archive.mutate(row.id)}
-                >
-                  <Archive className="size-4" />
-                  保管する
-                </Button>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" onClick={() => editCashflow(row)}>
+                    <Pencil className="size-4" />
+                    編集
+                  </Button>
+                  <Button
+                    className="text-red-700 hover:bg-red-50 hover:text-red-800"
+                    variant="ghost"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `「${row.title}」${formatYen(row.amountYen)}を保管します。集計対象から外れます。`,
+                        )
+                      )
+                        archive.mutate(row.id);
+                    }}
+                  >
+                    <Archive className="size-4" />
+                    保管
+                  </Button>
+                </div>
               </article>
             ))}
           </div>
@@ -243,9 +273,24 @@ export function CashflowsPage() {
                         variant="ghost"
                         size="icon"
                         aria-label="保管する"
-                        onClick={() => archive.mutate(row.id)}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `「${row.title}」${formatYen(row.amountYen)}を保管します。集計対象から外れます。`,
+                            )
+                          )
+                            archive.mutate(row.id);
+                        }}
                       >
                         <Archive className="size-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="編集する"
+                        onClick={() => editCashflow(row)}
+                      >
+                        <Pencil className="size-4" />
                       </Button>
                     </td>
                   </tr>
@@ -295,6 +340,30 @@ export function SchedulePage() {
     mutationFn: (body: unknown) => postJson('/api/scheduled-cashflows', body),
     onSuccess: () => void client.invalidateQueries({ queryKey: ['scheduled'] }),
   });
+  const updateScheduled = useMutation({
+    mutationFn: ({ id, body }: { id: number; body: unknown }) =>
+      patchJson(`/api/scheduled-cashflows/${id}`, body),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['scheduled'] }),
+  });
+  const endRule = useMutation({
+    mutationFn: (id: number) => deleteRequest(`/api/recurring-rules/${id}`),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['recurring-rules'] });
+      void client.invalidateQueries({ queryKey: ['scheduled'] });
+    },
+  });
+  function editScheduled(item: ScheduledCashflow) {
+    const title = window.prompt('内容を編集してください。', item.title);
+    if (title == null || !title.trim()) return;
+    const amountInput = window.prompt('金額（円）を編集してください。', String(item.amountYen));
+    if (amountInput == null) return;
+    const amountYen = Number(amountInput);
+    if (!Number.isSafeInteger(amountYen) || amountYen < 0) {
+      window.alert('金額は0以上の整数で入力してください。');
+      return;
+    }
+    updateScheduled.mutate({ id: item.id, body: { title: title.trim(), amountYen } });
+  }
   const confirm = useMutation({
     mutationFn: (item: ScheduledCashflow) =>
       postJson('/api/cashflows', {
@@ -513,6 +582,16 @@ export function SchedulePage() {
                     <Button
                       className="mt-4 w-full"
                       variant="outline"
+                      onClick={() => editScheduled(item)}
+                    >
+                      <Pencil />
+                      編集
+                    </Button>
+                  ) : null}
+                  {['planned', 'overdue'].includes(item.status) ? (
+                    <Button
+                      className="mt-4 w-full"
+                      variant="outline"
                       onClick={() => confirm.mutate(item)}
                     >
                       <CheckCircle2 />
@@ -569,6 +648,20 @@ export function SchedulePage() {
                         : '1回'}
                     ・{rule.dayOfMonth}日
                   </p>
+                  <Button
+                    className="mt-4 w-full"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (
+                        window.confirm(`「${rule.title}」を終了し、これからの予定を取り消します。`)
+                      )
+                        endRule.mutate(rule.id);
+                    }}
+                  >
+                    <Trash2 />
+                    終了
+                  </Button>
                 </Panel>
               ))}
             </div>

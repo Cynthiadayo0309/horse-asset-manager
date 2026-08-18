@@ -134,6 +134,7 @@ export const horses = sqliteTable(
     totalShares: integer('total_shares'),
     unitPriceYen: integer('unit_price_yen'),
     plannedShares: integer('planned_shares'),
+    sortOrder: integer('sort_order').notNull().default(0),
     initialPaymentYen: integer('initial_payment_yen'),
     expectedMonthlyCostYen: integer('expected_monthly_cost_yen'),
     expectedInsuranceYen: integer('expected_insurance_yen'),
@@ -162,6 +163,7 @@ export const horses = sqliteTable(
     index('idx_horses_user_status').on(table.userId, table.status),
     index('idx_horses_user_club').on(table.userId, table.clubId),
     index('idx_horses_user_deadline').on(table.userId, table.applicationDeadline),
+    index('idx_horses_user_sort_order').on(table.userId, table.sortOrder),
     check(
       'ck_horses_total_price_nonnegative',
       sql`${table.totalPriceYen} IS NULL OR ${table.totalPriceYen} >= 0`,

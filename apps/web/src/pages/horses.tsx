@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { formatYen } from '@horse-asset-manager/shared';
-import { ArrowRight, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowRight, GripVertical, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 
@@ -162,7 +162,11 @@ function HorseNameEditDialog({
   pending: boolean;
   error: unknown;
   onOpenChange: (open: boolean) => void;
-  onConfirm: (value: { name: string; nameKana: string | null }) => void;
+  onConfirm: (value: {
+    name: string;
+    nameKana: string | null;
+    expectedMonthlyCostYen: number | null;
+  }) => void;
 }) {
   if (!horse) return null;
   return (
@@ -188,19 +192,31 @@ function OpenHorseNameEditDialog({
   pending: boolean;
   error: unknown;
   onOpenChange: (open: boolean) => void;
-  onConfirm: (value: { name: string; nameKana: string | null }) => void;
+  onConfirm: (value: {
+    name: string;
+    nameKana: string | null;
+    expectedMonthlyCostYen: number | null;
+  }) => void;
 }) {
   const [name, setName] = useState(horse.name);
   const [nameKana, setNameKana] = useState(horse.nameKana ?? '');
+  const [expectedMonthlyCost, setExpectedMonthlyCost] = useState(
+    horse.expectedMonthlyCostYen?.toString() ?? '',
+  );
+  const expectedMonthlyCostYen = expectedMonthlyCost === '' ? null : Number(expectedMonthlyCost);
   const valid =
-    name.trim().length > 0 && name.trim().length <= 100 && nameKana.trim().length <= 100;
+    name.trim().length > 0 &&
+    name.trim().length <= 100 &&
+    nameKana.trim().length <= 100 &&
+    (expectedMonthlyCostYen == null ||
+      (Number.isSafeInteger(expectedMonthlyCostYen) && expectedMonthlyCostYen >= 0));
   return (
     <AlertDialog open onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>馬名を編集</AlertDialogTitle>
+          <AlertDialogTitle>馬情報を編集</AlertDialogTitle>
           <AlertDialogDescription>
-            募集時の名前から正式な馬名へ変更できます。変更前の名前は以前の名前として残り、PDF取込時の照合にも使用します。
+            馬名と月額見込みは後から変更できます。馬名を変更した場合、変更前の名前は以前の名前として残り、PDF取込時の照合にも使用します。
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="grid gap-4">
@@ -220,6 +236,20 @@ function OpenHorseNameEditDialog({
               disabled={pending}
             />
           </Field>
+          <Field label="月額見込み（円）">
+            <Input
+              type="number"
+              min="0"
+              step="1"
+              inputMode="numeric"
+              value={expectedMonthlyCost}
+              onChange={(event) => setExpectedMonthlyCost(event.target.value)}
+              disabled={pending}
+            />
+            <span className="text-xs text-muted-foreground">
+              毎月かかると想定する維持費などの目安です。予定支出は別途登録してください。
+            </span>
+          </Field>
           {error ? <ErrorState error={error} /> : null}
         </div>
         <AlertDialogFooter>
@@ -234,11 +264,15 @@ function OpenHorseNameEditDialog({
               disabled={pending || !valid}
               onClick={(event) => {
                 event.preventDefault();
-                onConfirm({ name: name.trim(), nameKana: nameKana.trim() || null });
+                onConfirm({
+                  name: name.trim(),
+                  nameKana: nameKana.trim() || null,
+                  expectedMonthlyCostYen,
+                });
               }}
             >
               <Pencil />
-              {pending ? '保存中…' : '名前を保存'}
+              {pending ? '保存中…' : '保存'}
             </Button>
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -251,10 +285,12 @@ export function HorsesPage({ prospects = false }: { prospects?: boolean }) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const [unitPriceInput, setUnitPriceInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [draggedHorseId, setDraggedHorseId] = useState<number | null>(null);
   const [horseToDelete, setHorseToDelete] = useState<Horse | null>(null);
-  const suffix = prospects ? '&status=considering' : '';
+  const suffix = `${prospects ? '&status=considering' : ''}${search ? `&search=${encodeURIComponent(search)}` : ''}`;
   const horses = useQuery({
-    queryKey: ['horses', prospects],
+    queryKey: ['horses', prospects, search],
     queryFn: () => apiList<Horse>(`/api/horses?pageSize=100${suffix}`),
   });
   const clubs = useQuery({
@@ -277,6 +313,22 @@ export function HorsesPage({ prospects = false }: { prospects?: boolean }) {
       setHorseToDelete(null);
     },
   });
+  const reorder = useMutation({
+    mutationFn: (orderedIds: number[]) => patchJson('/api/horses/order', { orderedIds }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['horses'] }),
+  });
+  function reorderFromDrop(targetId: number) {
+    if (search || draggedHorseId == null || draggedHorseId === targetId) return;
+    const rows = horses.data?.data ?? [];
+    const from = rows.findIndex((horse) => horse.id === draggedHorseId);
+    const to = rows.findIndex((horse) => horse.id === targetId);
+    if (from < 0 || to < 0) return;
+    const reordered = [...rows];
+    const [moved] = reordered.splice(from, 1);
+    if (!moved) return;
+    reordered.splice(to, 0, moved);
+    reorder.mutate(reordered.map((horse) => horse.id));
+  }
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -303,10 +355,22 @@ export function HorsesPage({ prospects = false }: { prospects?: boolean }) {
             : '出資後のお金の流れと現在の状態を馬ごとに管理します。'
         }
         actions={
-          <Button onClick={() => setOpen((value) => !value)}>
-            <Plus />
-            候補馬を登録
-          </Button>
+          <div className="grid gap-2 sm:flex sm:items-center">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                className="pl-9"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="馬名で検索"
+                aria-label="馬名で検索"
+              />
+            </div>
+            <Button onClick={() => setOpen((value) => !value)}>
+              <Plus />
+              候補馬を登録
+            </Button>
+          </div>
         }
       />
       {open ? (
@@ -351,11 +415,24 @@ export function HorsesPage({ prospects = false }: { prospects?: boolean }) {
                 {yenPreview(unitPriceInput)}
               </span>
             </Field>
-            <Field label="検討口数">
-              <Input name="plannedShares" type="number" min="1" />
+            <Field label="検討する口数">
+              <Input
+                name="plannedShares"
+                type="number"
+                min="1"
+                step="1"
+                inputMode="numeric"
+                defaultValue="1"
+              />
+              <span className="text-xs text-muted-foreground">
+                出資を検討する口数です。出資確定時に変更できます。
+              </span>
             </Field>
             <Field label="月額見込み（円）">
               <Input name="expectedMonthlyCostYen" type="number" min="0" />
+              <p className="mt-1 text-xs text-muted-foreground">
+                毎月かかると想定する維持費などの目安です。予定支出は別途登録してください。
+              </p>
             </Field>
             <Field label="募集締切">
               <Input name="applicationDeadline" type="date" />
@@ -363,8 +440,8 @@ export function HorsesPage({ prospects = false }: { prospects?: boolean }) {
             <Field label="メモ">
               <Textarea name="note" />
             </Field>
-            <div className="flex items-end sm:col-span-2 xl:col-span-1">
-              <Button className="w-full xl:w-auto" disabled={create.isPending} type="submit">
+            <div className="flex sm:col-span-2 sm:justify-end xl:col-span-3">
+              <Button className="w-full sm:w-auto" disabled={create.isPending} type="submit">
                 保存
               </Button>
             </div>
@@ -385,7 +462,22 @@ export function HorsesPage({ prospects = false }: { prospects?: boolean }) {
               ? horse.unitPriceYen
               : (horse.investment?.unitPriceYen ?? horse.unitPriceYen);
             return (
-              <article key={horse.id} className="rounded-xl border bg-card p-5 shadow-sm">
+              <article
+                key={horse.id}
+                draggable={!search}
+                onDragStart={() => setDraggedHorseId(horse.id)}
+                onDragEnd={() => setDraggedHorseId(null)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => {
+                  reorderFromDrop(horse.id);
+                  setDraggedHorseId(null);
+                }}
+                className={`rounded-xl border bg-card p-5 shadow-sm transition ${draggedHorseId === horse.id ? 'opacity-50' : ''}`}
+              >
+                <div className="mb-2 flex items-center gap-1 text-xs text-muted-foreground">
+                  <GripVertical className="size-4" aria-hidden="true" />
+                  {search ? '検索中は並べ替えできません' : 'ドラッグして並べ替え'}
+                </div>
                 <Link to={`/horses/${horse.id}`} className="group block hover:text-primary">
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -498,7 +590,7 @@ function InvestmentConfirmationForm({
   return (
     <>
       <form
-        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
+        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_auto] xl:items-start"
         onSubmit={(event) => {
           event.preventDefault();
           if (isValid) onSubmit({ shares, unitPriceYen, committedAmountYen });
@@ -547,8 +639,8 @@ function InvestmentConfirmationForm({
               : '口数と一口価格を入力してください。'}
           </span>
         </Field>
-        <div className="flex items-end">
-          <Button className="w-full xl:w-auto" type="submit" disabled={!isValid || pending}>
+        <div className="flex md:col-span-2 md:justify-end xl:col-span-1 xl:pt-[27px]">
+          <Button className="w-full md:w-auto" type="submit" disabled={!isValid || pending}>
             {pending ? '登録中…' : '出資と支出を登録'}
           </Button>
         </div>
@@ -616,8 +708,11 @@ export function HorseDetailPage() {
     },
   });
   const updateName = useMutation({
-    mutationFn: (body: { name: string; nameKana: string | null }) =>
-      patchJson<Horse>(`/api/horses/${id}`, body),
+    mutationFn: (body: {
+      name: string;
+      nameKana: string | null;
+      expectedMonthlyCostYen: number | null;
+    }) => patchJson<Horse>(`/api/horses/${id}`, body),
     onSuccess: () => {
       setNameEditOpen(false);
       void client.invalidateQueries({ queryKey: ['horse', id] });
@@ -682,7 +777,7 @@ export function HorseDetailPage() {
                 }}
               >
                 <Pencil />
-                馬名を編集
+                馬情報を編集
               </Button>
               <Select
                 aria-label="馬のステータス"

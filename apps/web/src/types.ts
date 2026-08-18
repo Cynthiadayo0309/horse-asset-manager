@@ -35,6 +35,7 @@ export interface Horse {
   recruitmentYear: number | null;
   unitPriceYen: number | null;
   plannedShares: number | null;
+  sortOrder: number;
   initialPaymentYen: number | null;
   expectedMonthlyCostYen: number | null;
   applicationDeadline: string | null;
@@ -114,6 +115,7 @@ export interface Budget {
   budgetType: 'monthly' | 'yearly';
   periodKey: string;
   amountYen: number;
+  note: string | null;
 }
 
 export interface DashboardSummary {

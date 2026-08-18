@@ -144,6 +144,16 @@ export const horseDeleteSchema = z
   })
   .strict();
 
+export const horseOrderUpdateSchema = z
+  .object({
+    orderedIds: z.array(idSchema).min(1).max(100),
+  })
+  .superRefine(({ orderedIds }, context) => {
+    if (new Set(orderedIds).size !== orderedIds.length)
+      context.addIssue({ code: 'custom', message: '馬IDが重複しています。', path: ['orderedIds'] });
+  })
+  .strict();
+
 export const horseListQuerySchema = paginationQuerySchema.extend({
   status: z.enum(horseStatuses).optional(),
   clubId: idSchema.optional(),

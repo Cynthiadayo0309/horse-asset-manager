@@ -20,6 +20,7 @@ import {
   horseCreateSchema,
   horseDeleteSchema,
   idSchema,
+  horseOrderUpdateSchema,
   horseListQuerySchema,
   horseUpdateSchema,
   idParamsSchema,
@@ -114,27 +115,38 @@ basicRoutes.patch('/clubs/:id', async (c) => {
 
 basicRoutes.delete('/clubs/:id', async (c) => {
   const { id } = parseValue(c.req.param(), idParamsSchema);
-  await assertClub(c, id);
+  const club = await assertClub(c, id);
   const user = c.get('user');
   const db = createDatabase(c.env.DB);
   const timestamp = nowIso();
-  const [updated] = await db.batch([
-    db
-      .update(clubs)
-      .set({ status: 'archived', updatedAt: timestamp })
-      .where(and(eq(clubs.id, id), eq(clubs.userId, user.id)))
-      .returning(),
+  const references = await c.env.DB.prepare(
+    `SELECT
+        (SELECT COUNT(*) FROM horses WHERE user_id = ? AND club_id = ?) +
+        (SELECT COUNT(*) FROM cashflows WHERE user_id = ? AND club_id = ?) +
+        (SELECT COUNT(*) FROM recurring_rules WHERE user_id = ? AND club_id = ?) +
+        (SELECT COUNT(*) FROM scheduled_cashflows WHERE user_id = ? AND club_id = ?) AS total`,
+  )
+    .bind(user.id, id, user.id, id, user.id, id, user.id, id)
+    .first<{ total: number }>();
+  if ((references?.total ?? 0) > 0)
+    throw new ApiError(
+      409,
+      'CLUB_IN_USE',
+      'このクラブは馬・収支・支払い予定で使用中のため削除できません。関連データを先に編集または削除してください。',
+    );
+  await db.batch([
+    db.delete(clubs).where(and(eq(clubs.id, id), eq(clubs.userId, user.id))),
     db.insert(auditLogs).values({
       userId: user.id,
-      action: 'archive',
+      action: 'delete',
       entityType: 'clubs',
       entityId: id,
-      changesJson: null,
+      changesJson: jsonChanges(club ?? {}),
       ipAddress: getIp(c),
       createdAt: timestamp,
     }),
   ]);
-  return ok(c, updated[0], 'クラブをアーカイブしました。');
+  return ok(c, { deleted: true }, 'クラブを削除しました。');
 });
 
 basicRoutes.get('/categories', async (c) => {
@@ -220,27 +232,38 @@ basicRoutes.patch('/categories/:id', async (c) => {
 
 basicRoutes.delete('/categories/:id', async (c) => {
   const { id } = parseValue(c.req.param(), idParamsSchema);
-  await assertCategory(c, id);
+  const category = await assertCategory(c, id);
   const user = c.get('user');
   const db = createDatabase(c.env.DB);
   const timestamp = nowIso();
-  const [updated] = await db.batch([
-    db
-      .update(categories)
-      .set({ status: 'archived', updatedAt: timestamp })
-      .where(and(eq(categories.id, id), eq(categories.userId, user.id)))
-      .returning(),
+  const references = await c.env.DB.prepare(
+    `SELECT
+        (SELECT COUNT(*) FROM categories WHERE user_id = ? AND parent_id = ?) +
+        (SELECT COUNT(*) FROM cashflows WHERE user_id = ? AND category_id = ?) +
+        (SELECT COUNT(*) FROM recurring_rules WHERE user_id = ? AND category_id = ?) +
+        (SELECT COUNT(*) FROM scheduled_cashflows WHERE user_id = ? AND category_id = ?) AS total`,
+  )
+    .bind(user.id, id, user.id, id, user.id, id, user.id, id)
+    .first<{ total: number }>();
+  if ((references?.total ?? 0) > 0)
+    throw new ApiError(
+      409,
+      'CATEGORY_IN_USE',
+      'このカテゴリーは収支・支払い予定で使用中のため削除できません。関連データを先に編集または削除してください。',
+    );
+  await db.batch([
+    db.delete(categories).where(and(eq(categories.id, id), eq(categories.userId, user.id))),
     db.insert(auditLogs).values({
       userId: user.id,
-      action: 'archive',
+      action: 'delete',
       entityType: 'categories',
       entityId: id,
-      changesJson: null,
+      changesJson: jsonChanges(category ?? {}),
       ipAddress: getIp(c),
       createdAt: timestamp,
     }),
   ]);
-  return ok(c, updated[0], 'カテゴリーをアーカイブしました。');
+  return ok(c, { deleted: true }, 'カテゴリーを削除しました。');
 });
 
 basicRoutes.get('/horses', async (c) => {
@@ -266,7 +289,7 @@ basicRoutes.get('/horses', async (c) => {
         ),
       )
       .where(where)
-      .orderBy(desc(horses.updatedAt))
+      .orderBy(asc(horses.sortOrder), desc(horses.updatedAt))
       .limit(query.pageSize)
       .offset((query.page - 1) * query.pageSize),
     db.select({ value: count() }).from(horses).where(where),
@@ -398,6 +421,33 @@ basicRoutes.patch('/horses/:id', async (c) => {
   }
   const [updatedRows] = await db.batch([updateQuery, auditQuery]);
   return ok(c, updatedRows[0], '馬情報を更新しました。');
+});
+
+basicRoutes.patch('/horses/order', async (c) => {
+  const input = await parseJson(c, horseOrderUpdateSchema);
+  const user = c.get('user');
+  const db = createDatabase(c.env.DB);
+  const owned = await db
+    .select({ id: horses.id })
+    .from(horses)
+    .where(and(eq(horses.userId, user.id), inArray(horses.id, input.orderedIds)));
+  if (owned.length !== input.orderedIds.length)
+    throw new ApiError(404, 'HORSE_NOT_FOUND', '並べ替え対象の馬が見つかりません。');
+  const timestamp = nowIso();
+  await c.env.DB.batch([
+    ...input.orderedIds.map((id, index) =>
+      c.env.DB
+        .prepare('UPDATE horses SET sort_order = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+        .bind((index + 1) * 100, timestamp, id, user.id),
+    ),
+    c.env.DB
+      .prepare(
+        `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, changes_json, ip_address, created_at)
+         VALUES (?, 'update', 'horses', NULL, ?, ?, ?)`,
+      )
+      .bind(user.id, jsonChanges({ orderedIds: input.orderedIds }), getIp(c), timestamp),
+  ]);
+  return ok(c, { orderedIds: input.orderedIds }, '馬の表示順を更新しました。');
 });
 
 basicRoutes.delete('/horses/:id', async (c) => {
@@ -702,4 +752,30 @@ basicRoutes.patch('/budgets/:id', async (c) => {
     }),
   ]);
   return ok(c, updated[0], '予算を更新しました。');
+});
+
+basicRoutes.delete('/budgets/:id', async (c) => {
+  const { id } = parseValue(c.req.param(), idParamsSchema);
+  const user = c.get('user');
+  const db = createDatabase(c.env.DB);
+  const current = await db
+    .select()
+    .from(budgets)
+    .where(and(eq(budgets.id, id), eq(budgets.userId, user.id)))
+    .limit(1);
+  if (!current[0]) throw new ApiError(404, 'BUDGET_NOT_FOUND', '予算が見つかりません。');
+  const timestamp = nowIso();
+  await db.batch([
+    db.delete(budgets).where(and(eq(budgets.id, id), eq(budgets.userId, user.id))),
+    db.insert(auditLogs).values({
+      userId: user.id,
+      action: 'delete',
+      entityType: 'budgets',
+      entityId: id,
+      changesJson: jsonChanges(current[0]),
+      ipAddress: getIp(c),
+      createdAt: timestamp,
+    }),
+  ]);
+  return ok(c, { deleted: true }, '予算を削除しました。');
 });
